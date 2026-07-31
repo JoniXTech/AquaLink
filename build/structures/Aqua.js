@@ -273,6 +273,35 @@ class Aqua extends EventEmitter {
     return true
   }
 
+  getVoiceStateQueueDelay(guildId) {
+    const target = guildId ? String(guildId) : ''
+    if (!target || !this._voiceStateQueued.has(target)) return 0
+
+    let position = 0
+    const seen = new Set()
+    for (
+      let index = this._voiceStateQueueHead;
+      index < this._voiceStateQueue.length;
+      index++
+    ) {
+      const queuedGuildId = this._voiceStateQueue[index]
+      if (
+        !queuedGuildId ||
+        seen.has(queuedGuildId) ||
+        !this._voiceStateQueued.has(queuedGuildId)
+      ) {
+        continue
+      }
+      seen.add(queuedGuildId)
+      position++
+      if (queuedGuildId === target) {
+        return position * VOICE_STATE_QUEUE_INTERVAL
+      }
+    }
+
+    return this._voiceStateQueued.size * VOICE_STATE_QUEUE_INTERVAL
+  }
+
   _scheduleVoiceStateFlush(delay = 0) {
     if (this._voiceStateFlushTimer) return
     this._voiceStateFlushTimer = setTimeout(

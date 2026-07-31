@@ -146,6 +146,7 @@ declare module 'aqualink' {
     destroy(): void
 
     getTrace(limit?: number): TraceEntry[]
+    getVoiceStateQueueDelay(guildId: string): number
 
     // Internal Methods
     _invalidateCache(): void
@@ -802,6 +803,7 @@ declare module 'aqualink' {
     _scheduleVoiceUpdate(isResume?: boolean): void
     _executeVoiceUpdate(): void
     _sendUpdate(payload: Record<string, unknown>): Promise<void>
+    _prepareFreshVoiceJoin(): boolean
     _handleDisconnect(): void
     _clearPendingUpdate(): void
     _checkRegionMigration(): void

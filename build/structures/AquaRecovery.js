@@ -471,13 +471,23 @@ class AquaRecovery {
 
   seekAfterTrackStart(player, guildId, position, delay = 50) {
     if (!player || !guildId || !(position > 0)) return
-    const seekOnce = (startedPlayer) => {
-      if (startedPlayer.guildId !== guildId) return
+
+    let timeoutId = null
+    const cleanup = () => {
+      if (timeoutId) clearTimeout(timeoutId)
       this.aqua.off(AqualinkEvents.TrackStart, seekOnce)
       player.removeListener('destroy', cleanup)
+    }
+
+    const seekOnce = (startedPlayer) => {
+      if (startedPlayer.guildId !== guildId) return
+      cleanup()
       this._functions.unrefTimeout(() => player.seek?.(position), delay)
     }
-    const cleanup = () => this.aqua.off(AqualinkEvents.TrackStart, seekOnce)
+
+    timeoutId = setTimeout(cleanup, 30000)
+    if (timeoutId.unref) timeoutId.unref()
+
     this.aqua.on(AqualinkEvents.TrackStart, seekOnce)
     player.once('destroy', cleanup)
   }

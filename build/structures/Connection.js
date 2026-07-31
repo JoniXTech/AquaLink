@@ -183,6 +183,31 @@ class Connection {
     return true
   }
 
+  _prepareFreshVoiceJoin() {
+    if (this._destroyed) return false
+
+    this._clearNullChannelTimer()
+    this._clearPendingUpdate()
+    this._clearReconnectTimer()
+    this._stateGeneration++
+
+    this.sessionId = null
+    this.channelId = null
+    this.endpoint = null
+    this.token = null
+    this.region = null
+    this._lastEndpoint = null
+    this._lastVoiceDataUpdate = 0
+    this._lastSentVoiceKey = ''
+    this._lastStateReqAt = 0
+    this._reconnectAttempts = 0
+    this._consecutiveFailures = 0
+    this._stateFlags =
+      (this._stateFlags & ~(STATE.CONNECTED | STATE.ATTEMPTING_RESUME)) |
+      STATE.VOICE_DATA_STALE
+    return true
+  }
+
   _clearNullChannelTimer() {
     if (!this._nullChannelTimer) return
     clearTimeout(this._nullChannelTimer)
@@ -258,6 +283,9 @@ class Connection {
       return
     }
 
+    const wasVoiceDataStale = !!(this._stateFlags & STATE.VOICE_DATA_STALE)
+    this._lastVoiceDataUpdate = Date.now()
+    this._stateFlags &= ~STATE.VOICE_DATA_STALE
     this.isWaitingForDisconnect = false
     if (this._aqua?.debugTrace) {
       this._aqua._trace('connection.stateUpdate', {
@@ -270,7 +298,7 @@ class Connection {
 
     if (p && p.txId > this.txId) this.txId = p.txId
 
-    let needsUpdate = false
+    let needsUpdate = wasVoiceDataStale
 
     if (this.voiceChannel !== channelId) {
       p._reconnecting = true

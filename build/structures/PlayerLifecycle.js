@@ -1,6 +1,12 @@
 const { AqualinkEvents } = require('./AqualinkEvents')
 const { reportSuppressedError } = require('./Reporting')
 
+const FRESH_REJOIN_DELAYS = Object.freeze({
+  4014: 3000,
+  4022: 5000
+})
+const FRESH_REJOIN_GUARD_MS = 30000
+
 class PlayerLifecycle {
   constructor(player, deps) {
     this.player = player
@@ -65,6 +71,7 @@ class PlayerLifecycle {
       }
     } else {
       player._voiceDownSince = 0
+      player.reconnectionRetries = 0
       player.state = this.PLAYER_STATE.READY
       player._clearVoiceRecovery(undefined, 'connected')
       player._voiceRecovering = false
@@ -230,6 +237,90 @@ class PlayerLifecycle {
       )
   }
 
+  async freshVoiceRejoin(code, payload) {
+    const player = this.player
+    const voiceChannel = this._functions.toId(player.voiceChannel)
+    if (!voiceChannel) {
+      player.aqua?.emit?.(AqualinkEvents.SocketClosed, player, payload)
+      return
+    }
+
+    const recoveryToken = player._claimVoiceRecovery(
+      `socket_closed_fresh_${code}`
+    )
+    player.connected = false
+    player._voiceDownSince = player._voiceDownSince || Date.now()
+    player._reconnecting = true
+    player._isActivelyReconnecting = true
+
+    if (player.aqua?.debugTrace) {
+      player.aqua._trace('player.socketClosed.freshRejoin', {
+        guildId: player.guildId,
+        code,
+        delay: FRESH_REJOIN_DELAYS[code]
+      })
+    }
+
+    player.aqua?.emit?.(AqualinkEvents.PlayerReconnect, player, {
+      code,
+      fresh: true,
+      resuming: false
+    })
+
+    try {
+      await player._delay(FRESH_REJOIN_DELAYS[code])
+      if (!player._isVoiceRecoveryActive(recoveryToken) || player.destroyed) {
+        if (player.connected && !player.destroyed) {
+          player._reconnecting = false
+          player._isActivelyReconnecting = false
+        }
+        return
+      }
+
+      if (!player.connection?._prepareFreshVoiceJoin?.()) {
+        throw new Error(
+          `Unable to prepare fresh voice join (guild=${player.guildId})`
+        )
+      }
+
+      player.connect({
+        guildId: player.guildId,
+        voiceChannel,
+        deaf: player.deaf,
+        mute: player.mute
+      })
+      player._isActivelyReconnecting = false
+
+      const queueDelay =
+        player.aqua?.getVoiceStateQueueDelay?.(player.guildId) || 0
+      player._createTimer(() => {
+        if (player.connected || !player._isVoiceRecoveryActive(recoveryToken))
+          return
+        player._reconnecting = false
+        player._voiceRecovering = false
+        player._clearVoiceRecovery(recoveryToken, 'fresh_rejoin_timed_out')
+        player.aqua?.emit?.(AqualinkEvents.ReconnectionFailed, player, {
+          code,
+          error: new Error(
+            `Fresh voice rejoin timed out (guild=${player.guildId})`
+          ),
+          fresh: true,
+          payload,
+          retriesLeft: 0
+        })
+      }, FRESH_REJOIN_GUARD_MS + queueDelay)
+    } catch (error) {
+      player._reconnecting = false
+      player._isActivelyReconnecting = false
+      player._clearVoiceRecovery(recoveryToken, 'fresh_rejoin_failed')
+      reportSuppressedError(player, 'player.socketClosed.freshRejoin', error, {
+        code,
+        guildId: player.guildId
+      })
+      player.aqua?.emit?.(AqualinkEvents.SocketClosed, player, payload)
+    }
+  }
+
   async socketClosed(_player, _track, payload) {
     const player = this.player
     if (player.destroyed || player._reconnecting) return
@@ -241,9 +332,8 @@ class PlayerLifecycle {
     }
 
     const code = payload?.code
-    if (code === 4014) {
-      await player._delay(150)
-      if (player.destroyed) return
+    if (code === 4014 || code === 4022) {
+      return this.freshVoiceRejoin(code, payload)
     }
 
     if (code === 4006 && player._resuming) {
@@ -257,12 +347,7 @@ class PlayerLifecycle {
       return
     }
 
-    let isRecoverable = [4015, 4009, 4006, 4014, 4022].includes(code)
-    if (
-      code === 4014 &&
-      (player.connection?.isWaitingForDisconnect || !player.voiceChannel)
-    )
-      isRecoverable = false
+    const isRecoverable = [4015, 4009, 4006].includes(code)
 
     if (code === 4015 && !player.nodes?.info?.isNodelink) {
       const recoveryToken = player._claimVoiceRecovery('socket_closed_resume')
@@ -290,12 +375,6 @@ class PlayerLifecycle {
       return
     }
 
-    if (code === 4014 || code === 4022) {
-      player.connected = false
-      if (!player._voiceDownSince) player._voiceDownSince = Date.now()
-      player._suppressResumeUntil = Date.now() + (code === 4022 ? 3000 : 2000)
-    }
-
     const aqua = player.aqua
     const vcId = this._functions.toId(player.voiceChannel)
     const tcId = this._functions.toId(player.textChannel)
@@ -304,83 +383,6 @@ class PlayerLifecycle {
     if (!vcId) {
       aqua?.emit?.(AqualinkEvents.SocketClosed, player, payload)
       return
-    }
-
-    if (code === 4014 || code === 4022) {
-      const recoveryToken = player._claimVoiceRecovery('socket_closed_soft')
-      const now = Date.now()
-      if (
-        now - (player._voiceRequestAt || 0) >= 1200 &&
-        player._isVoiceRecoveryActive(recoveryToken)
-      ) {
-        player._voiceRequestAt = now
-        if (player._isVoiceRecoveryActive(recoveryToken))
-          player.connection?._requestVoiceState?.()
-        if (player._isVoiceRecoveryActive(recoveryToken))
-          player.connection?.resendVoiceUpdate?.(true)
-        if (player._isVoiceRecoveryActive(recoveryToken))
-          this._functions.safeCall(() =>
-            player.connect({
-              guildId,
-              voiceChannel: vcId,
-              deaf,
-              mute
-            })
-          )
-      }
-
-      if (player.aqua?.debugTrace) {
-        player.aqua._trace('player.socketClosed.softRecover', {
-          guildId: player.guildId,
-          code,
-          strategy: code === 4022 ? 'resume_after_voice_refresh' : '4014_retry'
-        })
-      }
-      const waitMs = Math.max(0, player._suppressResumeUntil - Date.now())
-      if (waitMs > 0) await player._delay(waitMs)
-
-      let resumed = false
-      if (
-        player._isVoiceRecoveryActive(recoveryToken) &&
-        !player.destroyed &&
-        !player.connected
-      ) {
-        resumed = await player.connection?.attemptResume?.().catch((error) => {
-          reportSuppressedError(
-            player,
-            'player.socketClosed.softRecover',
-            error,
-            {
-              guildId: player.guildId,
-              code
-            }
-          )
-          return false
-        })
-      }
-      if (resumed)
-        player._clearVoiceRecovery(recoveryToken, 'socket_soft_resumed')
-      if (
-        resumed ||
-        player.connected ||
-        player.destroyed ||
-        player._reconnecting
-      ) {
-        if (player.aqua?.debugTrace) {
-          player.aqua._trace('player.socketClosed.softRecover.ok', {
-            guildId: player.guildId,
-            code,
-            resumed: !!resumed
-          })
-        }
-        return
-      }
-      if (player.aqua?.debugTrace) {
-        player.aqua._trace('player.socketClosed.softRecover.failed', {
-          guildId: player.guildId,
-          code
-        })
-      }
     }
 
     const state = {

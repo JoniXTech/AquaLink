@@ -20,8 +20,20 @@ class ConnectionRecovery {
       typeof data.endpoint === 'string' ? data.endpoint.trim() : ''
     if (!endpoint) return
 
-    if (conn._lastEndpoint === endpoint && conn.token === data.token) return
     if (data.txId && data.txId < conn.txId) return
+
+    const wasVoiceDataStale = !!(conn._stateFlags & this.STATE.VOICE_DATA_STALE)
+    const unchanged =
+      conn._lastEndpoint === endpoint && conn.token === data.token
+    conn._lastVoiceDataUpdate = Date.now()
+    conn._stateFlags &= ~this.STATE.VOICE_DATA_STALE
+    if (unchanged) {
+      if (wasVoiceDataStale) {
+        conn._scheduleVoiceUpdate()
+        conn._player?._flushDeferredPlay?.()
+      }
+      return
+    }
 
     conn._stateGeneration++
 
@@ -37,7 +49,6 @@ class ConnectionRecovery {
     conn.region = this._functions.extractRegion(endpoint)
     conn.token = data.token
     conn.channelId = data.channel_id || conn.channelId || conn.voiceChannel
-    conn._lastVoiceDataUpdate = Date.now()
     if (conn._aqua?.debugTrace) {
       conn._aqua._trace('connection.serverUpdate', {
         guildId: conn._guildId,
@@ -46,8 +57,6 @@ class ConnectionRecovery {
         txId: data.txId || null
       })
     }
-    conn._stateFlags &= ~this.STATE.VOICE_DATA_STALE
-
     const migrated = this.checkRegionMigration()
     if (migrated) return
     conn._scheduleVoiceUpdate()
