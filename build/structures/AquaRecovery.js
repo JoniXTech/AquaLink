@@ -641,7 +641,11 @@ class AquaRecovery {
           }
 
           this.seekAfterTrackStart(player, gId, p.p, 100)
-          await player.play(undefined, { startTime: p.p, paused: p.pa })
+          await player.play(undefined, {
+            startTime: p.p,
+            paused: p.pa,
+            userData: p.ud
+          })
         }
         if (p.nw && p.t) {
           const channel = this.aqua.client.channels?.cache?.get?.(p.t)
@@ -838,6 +842,7 @@ class AquaRecovery {
       t: state.textChannel,
       v: state.voiceChannel,
       u: state.current?.uri || null,
+      ud: state.current?.userData || null,
       p: state.position || 0,
       q: (state.queue || [])
         .slice(0, this.aqua.maxQueueSave)

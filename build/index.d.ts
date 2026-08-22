@@ -1202,6 +1202,7 @@ declare module 'aqualink' {
     t: string // textChannel
     v: string // voiceChannel
     u: string | null // uri
+    ud: Record<string, unknown> | null // current track userData
     p: number // position
     ts: number // timestamp
     q: string[] // queue uris
