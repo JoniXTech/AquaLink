@@ -398,6 +398,7 @@ class Player extends EventEmitter {
       this.playing = true
       this.paused = !!options.paused
       this.position = options.startTime || 0
+      if (options.userData) this.current.userData = options.userData
       if (this.aqua?.debugTrace) {
         this.aqua._trace('player.play', {
           guildId: this.guildId,
@@ -465,6 +466,8 @@ class Player extends EventEmitter {
         track: { encoded: this.current.track },
         paused: this.paused
       }
+      if (this.current.userData)
+        updateData.track.userData = this.current.userData
       if (this.position > 0) updateData.position = this.position
 
       this._deferredStart = false

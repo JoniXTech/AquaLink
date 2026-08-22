@@ -332,11 +332,19 @@ declare module 'aqualink' {
      *
      * // Play a specific track
      * await player.play(track);
+     *
+     * // Play a track with custom user data attached to it
+     * await player.play(track, { userData: { requesterId: '...' } });
      * ```
      */
     play(
       track?: Track | null,
-      options?: { paused?: boolean; startTime?: number; noReplace?: boolean }
+      options?: {
+        paused?: boolean
+        startTime?: number
+        noReplace?: boolean
+        userData?: Record<string, unknown>
+      }
     ): Promise<Player>
 
     /**
@@ -539,6 +547,7 @@ declare module 'aqualink' {
     artworkUrl: string
     track: string | null
     playlist: PlaylistInfo | null
+    userData: Record<string, unknown> | null
     requester: unknown
     nodes: Node
     node: Node | null
@@ -994,6 +1003,7 @@ declare module 'aqualink' {
     track?: string
     info: TrackInfo
     playlist?: PlaylistInfo
+    userData?: Record<string, unknown>
     node?: Node
     nodes?: Node
   }
@@ -1088,7 +1098,7 @@ declare module 'aqualink' {
   export interface MixerOptions {
     identifier?: string
     encoded?: string
-    userData?: unknown
+    userData?: Record<string, unknown>
     volume?: number
   }
 

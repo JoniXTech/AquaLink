@@ -577,6 +577,8 @@ class PlayerLifecycle {
       track: { encoded: player.current.track },
       paused: player.paused
     }
+    if (player.current.userData)
+      updateData.track.userData = player.current.userData
     if (player.position > 0) updateData.position = player.position
     if (player.aqua?.debugTrace) {
       player.aqua._trace('player.play.deferred.flush', {

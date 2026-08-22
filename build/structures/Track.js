@@ -25,6 +25,8 @@ class Track {
     this.pluginInfo = pluginInfo
     this.isrc = _h.str(info.isrc || pluginInfo.isrc) // ISRC support
 
+    this.userData = data.userData || null
+
     this.playlist = data.playlist || null
     this.node = node || data.node || null
     this.nodes = data.nodes || null
@@ -116,6 +118,7 @@ class Track {
     this.position = _h.num(fi.position, this.position)
     this.duration = _h.num(fi.length, this.duration)
     this.playlist = found.playlist ?? this.playlist
+    this.userData = found.userData ?? this.userData
     this.isrc = _h.str(
       fi.isrc ?? fi.pluginInfo?.isrc ?? found.pluginInfo?.isrc ?? this.isrc
     ) // keep ISRC
@@ -137,6 +140,7 @@ class Track {
       this.node =
       this.nodes =
       this.playlist =
+      this.userData =
       this.track =
         null
     this.identifier =
