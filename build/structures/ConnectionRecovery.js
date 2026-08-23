@@ -308,6 +308,8 @@ class ConnectionRecovery {
           track: { encoded: conn._player.current.track },
           paused: !!conn._player.paused
         }
+        if (conn._player.current.userData)
+          data.track.userData = conn._player.current.userData
         if (conn._player.position > 0) data.position = conn._player.position
         await conn._rest.updatePlayer({
           guildId: conn._guildId,

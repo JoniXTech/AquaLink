@@ -946,6 +946,7 @@ class Aqua extends EventEmitter {
           t: player.textChannel,
           v: player.voiceChannel,
           u: player.current?.uri || null,
+          ud: player.current?.userData || null,
           p: player.position || 0,
           ts: player.timestamp || 0,
           q: player.queue
