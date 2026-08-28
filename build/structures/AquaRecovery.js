@@ -206,7 +206,7 @@ class AquaRecovery {
       if (!players.length) return
       const available = []
       for (const node of this.aqua.nodeMap.values()) {
-        if (node !== failedNode && node.connected) available.push(node)
+        if (node !== failedNode && node.isUsable) available.push(node)
       }
       if (!available.length) throw new Error('No failover nodes')
       const results = await this.migratePlayersOptimized(players, available)
@@ -328,7 +328,7 @@ class AquaRecovery {
     if (!region) return null
     const candidates = []
     for (const node of this.aqua.nodeMap.values()) {
-      if (!node?.connected) continue
+      if (!node?.isUsable) continue
       const regions = Array.isArray(node.regions) ? node.regions : []
       if (regions.some((r) => this.regionMatches(r, region))) {
         candidates.push(node)
@@ -344,7 +344,7 @@ class AquaRecovery {
       const player = this.aqua.players.get(id)
       if (!player || player.destroyed)
         throw new Error(`Player not found: ${id}`)
-      if (!targetNode?.connected)
+      if (!targetNode?.isUsable)
         throw new Error('Target node is not connected')
       if (player.nodes === targetNode || player.nodes?.name === targetNode.name)
         return player
@@ -595,10 +595,10 @@ class AquaRecovery {
         if (existing?.playing && !existing.destroyed) return true
         if (existing?.destroyed) this.aqua.players.delete(gId)
 
-        const targetNode = preferredNode?.connected
+        const targetNode = preferredNode?.isUsable
           ? preferredNode
           : this.aqua.leastUsedNodes[0]
-        if (!targetNode?.connected) {
+        if (!targetNode?.isUsable) {
           throw new Error(`No connected node available to restore guild ${gId}`)
         }
 
