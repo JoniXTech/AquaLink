@@ -58,6 +58,7 @@ const DEFAULT_OPTIONS = Object.freeze({
     maxFailoverAttempts: 5
   }),
   maxQueueSave: 10,
+  persistTracks: 'uri',
   maxTracksRestore: 20,
   trackResolveConcurrency: 4,
   brokenPlayerStorePath: null
@@ -137,6 +138,7 @@ class Aqua extends EventEmitter {
     this.autoRegionMigrate = merged.autoRegionMigrate
     this.useHttp2 = merged.useHttp2
     this.maxQueueSave = merged.maxQueueSave
+    this.persistTracks = merged.persistTracks
     this.maxTracksRestore = merged.maxTracksRestore
     this.trackResolveConcurrency = Math.max(
       1,
@@ -900,6 +902,32 @@ class Aqua extends EventEmitter {
     }
   }
 
+  _serializePlayer(player) {
+    const requester = player.requester || player.current?.requester
+    const full = this.persistTracks === 'full'
+    return {
+      g: player.guildId,
+      t: player.textChannel,
+      v: player.voiceChannel,
+      u: full
+        ? (player.current?.toJSON() ?? null)
+        : player.current?.uri || null,
+      ud: player.current?.userData || null,
+      p: player.position || 0,
+      ts: player.timestamp || 0,
+      q: player.queue
+        .toArray()
+        .slice(0, this.maxQueueSave)
+        .map((tr) => (full ? tr.toJSON() : tr.uri)),
+      r: requester ? `${requester.id}:${requester.username}` : null,
+      vol: player.volume,
+      pa: player.paused,
+      pl: player.playing,
+      nw: player.nowPlayingMessage?.id || null,
+      resuming: true
+    }
+  }
+
   async savePlayer(filePath = './AquaPlayers.jsonl') {
     const lockFile = `${filePath}.lock`
     const tempFile = `${filePath}.tmp`
@@ -940,27 +968,7 @@ class Aqua extends EventEmitter {
       }
       buffer.push(JSON.stringify({ type: 'node_sessions', data: nodeSessions }))
       for (const player of this.players.values()) {
-        const requester = player.requester || player.current?.requester
-        const data = {
-          g: player.guildId,
-          t: player.textChannel,
-          v: player.voiceChannel,
-          u: player.current?.uri || null,
-          ud: player.current?.userData || null,
-          p: player.position || 0,
-          ts: player.timestamp || 0,
-          q: player.queue
-            .toArray()
-            .slice(0, this.maxQueueSave)
-            .map((tr) => tr.uri),
-          r: requester ? `${requester.id}:${requester.username}` : null,
-          vol: player.volume,
-          pa: player.paused,
-          pl: player.playing,
-          nw: player.nowPlayingMessage?.id || null,
-          resuming: true
-        }
-        buffer.push(JSON.stringify(data))
+        buffer.push(JSON.stringify(this._serializePlayer(player)))
 
         if (buffer.length >= WRITE_BUFFER_SIZE) {
           const chunk = `${buffer.join('\n')}\n`

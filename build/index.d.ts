@@ -30,6 +30,11 @@ declare module 'aqualink' {
     loadBalancer: LoadBalancerStrategy
     send: (payload: Record<string, unknown>) => void
     autoRegionMigrate: boolean
+    persistTracks: 'uri' | 'full'
+    maxQueueSave: number
+    maxTracksRestore: number
+    trackResolveConcurrency: number
+    brokenPlayerStorePath: string
 
     // Internal State Management
     _nodeStates: Map<
@@ -187,6 +192,11 @@ declare module 'aqualink' {
     _handlePlayerDestroy(player: Player): void
     _waitForFirstNode(timeout?: number): Promise<void>
     _restorePlayer(data: SavedPlayerData): Promise<boolean>
+    /**
+     * Builds the record `savePlayer` writes for one player. Override this
+     * instead of `savePlayer` when only the storage medium changes.
+     */
+    _serializePlayer(player: Player): SavedPlayerData
     _createDefaultSend(): (packet: Record<string, unknown>) => void
     _bindEventHandlers(): void
     _regionMatches(configuredRegion: string, extractedRegion: string): boolean
@@ -562,6 +572,13 @@ declare module 'aqualink' {
 
     // Methods
     /**
+     * Serializes the track into a record that `new Track(...)` accepts,
+     * preserving encoded, info, pluginInfo and userData. The requester is
+     * reduced to the compact `"id:username"` form.
+     */
+    toJSON(): SerializedTrack
+
+    /**
      * Resolves local artwork/thumbnail
      */
     resolveThumbnail(url?: string): string | null
@@ -870,6 +887,17 @@ declare module 'aqualink' {
     autoRegionMigrate?: boolean
     debugTrace?: boolean
     traceMaxEntries?: number
+    traceSink?: (...args: unknown[]) => void
+    /**
+     * How `savePlayer` persists tracks.
+     * - `'uri'` (default): only `track.uri`, re-resolved on restore
+     * - `'full'`: the whole track record, restored locally with no REST call
+     */
+    persistTracks?: 'uri' | 'full'
+    maxQueueSave?: number
+    maxTracksRestore?: number
+    trackResolveConcurrency?: number
+    brokenPlayerStorePath?: string
   }
 
   export interface FailoverOptions {
@@ -996,16 +1024,28 @@ declare module 'aqualink' {
     sourceName: string
     artworkUrl: string
     position?: number
+    isrc?: string | null
   }
 
   export interface TrackData {
-    encoded?: string
-    track?: string
+    encoded?: string | null
+    track?: string | null
     info: TrackInfo
+    pluginInfo?: Record<string, unknown>
     playlist?: PlaylistInfo
     userData?: Record<string, unknown>
     node?: Node
     nodes?: Node
+  }
+
+  /**
+   * A track as persisted by `savePlayer` when `persistTracks: 'full'`.
+   * Round-trips through `new Track(record, requester, node)` with no
+   * network call.
+   */
+  export interface SerializedTrack extends TrackData {
+    encoded: string | null
+    requester?: string | null // compact "id:username", as SavedPlayerData['r']
   }
 
   export interface PlaylistInfo {
@@ -1201,11 +1241,13 @@ declare module 'aqualink' {
     g: string // guildId
     t: string // textChannel
     v: string // voiceChannel
-    u: string | null // uri
+    // uri, or the whole record under persistTracks: 'full'
+    u: string | SerializedTrack | null
     ud: Record<string, unknown> | null // current track userData
     p: number // position
     ts: number // timestamp
-    q: string[] // queue uris
+    // queue uris, or whole records under persistTracks: 'full'
+    q: (string | SerializedTrack)[]
     r: string | null // requester
     vol: number // volume
     pa: boolean // paused
