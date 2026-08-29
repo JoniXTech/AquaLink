@@ -192,10 +192,6 @@ declare module 'aqualink' {
     _handlePlayerDestroy(player: Player): void
     _waitForFirstNode(timeout?: number): Promise<void>
     _restorePlayer(data: SavedPlayerData): Promise<boolean>
-    /**
-     * Builds the record `savePlayer` writes for one player. Override this
-     * instead of `savePlayer` when only the storage medium changes.
-     */
     _serializePlayer(player: Player): SavedPlayerData
     _createDefaultSend(): (packet: Record<string, unknown>) => void
     _bindEventHandlers(): void
