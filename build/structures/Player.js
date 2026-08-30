@@ -316,6 +316,23 @@ class Player extends EventEmitter {
 
   async _handleEvent(payload) {
     if (this.destroyed || !payload?.type) return
+
+    // Adopt any pluginInfo the node attached at playback time.
+    // e.g. actual stream source, spotify canvas, and anything added later.
+    // `this.current` is the resolve-time track and predates all of it.
+    const eventTrack = payload.track
+    if (
+      eventTrack?.pluginInfo &&
+      this.current &&
+      (eventTrack.encoded === this.current.track ||
+        eventTrack.info?.identifier === this.current.identifier)
+    ) {
+      this.current.pluginInfo = {
+        ...(this.current.pluginInfo || {}),
+        ...eventTrack.pluginInfo
+      }
+    }
+
     const handler = EVENT_HANDLERS[payload.type]
     if (typeof this[handler] !== 'function') {
       this.aqua.emit(
