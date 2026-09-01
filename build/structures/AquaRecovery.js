@@ -3,6 +3,7 @@ const path = require('node:path')
 const readline = require('node:readline')
 const { AqualinkEvents } = require('./AqualinkEvents')
 const { emitOperationalError, reportSuppressedError } = require('./Reporting')
+const Track = require('./Track')
 
 class AquaRecovery {
   constructor(aqua, deps) {
@@ -617,17 +618,30 @@ class AquaRecovery {
         player._resuming = !!p.resuming
         this._applyVoiceBootstrap(player, p.vs)
         const requester = this._functions.parseRequester(p.r)
-        const tracksToResolve = [p.u, ...(p.q || [])]
-          .filter(Boolean)
-          .slice(0, this.aqua.maxTracksRestore)
-        const resolved = await Promise.all(
-          tracksToResolve.map((uri) =>
+        // Entries are either a uri (resolved over REST) or a full track
+        // record (hydrated locally). Only the former spends the budget.
+        let resolveBudget = this.aqua.maxTracksRestore
+        const pending = []
+        for (const entry of [p.u, ...(p.q || [])]) {
+          if (!entry) continue
+          if (typeof entry === 'object') {
+            const owner =
+              this._functions.parseRequester(entry.requester) || requester
+            pending.push(new Track(entry, owner, targetNode))
+            continue
+          }
+          if (resolveBudget <= 0) continue
+          resolveBudget--
+          pending.push(
             this._resolveTrackWithLimit(() =>
-              this.aqua.resolve({ query: uri, requester }).catch(() => null)
+              this.aqua.resolve({ query: entry, requester }).catch(() => null)
             )
           )
+        }
+        const resolved = await Promise.all(pending)
+        const validTracks = resolved.flatMap((result) =>
+          result instanceof Track ? [result] : result?.tracks || []
         )
-        const validTracks = resolved.flatMap((result) => result?.tracks || [])
         if (validTracks.length && player.queue?.add) {
           player.queue.add(...validTracks)
         }
@@ -834,6 +848,7 @@ class AquaRecovery {
     if (!state) return null
     const requester = player.requester || player.current?.requester
     const connection = player.connection
+    const full = this.aqua.persistTracks === 'full'
     return {
       type: 'broken_player',
       n: nodeId,
@@ -841,12 +856,12 @@ class AquaRecovery {
       g: state.guildId,
       t: state.textChannel,
       v: state.voiceChannel,
-      u: state.current?.uri || null,
+      u: full ? (state.current?.toJSON() ?? null) : state.current?.uri || null,
       ud: state.current?.userData || null,
       p: state.position || 0,
       q: (state.queue || [])
         .slice(0, this.aqua.maxQueueSave)
-        .map((track) => track?.uri)
+        .map((track) => (full ? track?.toJSON() : track?.uri))
         .filter(Boolean),
       r: requester ? `${requester.id}:${requester.username}` : null,
       vol: state.volume,
