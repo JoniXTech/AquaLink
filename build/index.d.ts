@@ -220,6 +220,7 @@ declare module 'aqualink' {
     reconnectTries: number
     infiniteReconnects: boolean
     connected: boolean
+    readonly isUsable: boolean
     info: NodeInfo | null
     isNodelink: boolean
     ws: unknown | null // WebSocket
