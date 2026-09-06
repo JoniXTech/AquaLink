@@ -690,7 +690,7 @@ class Player extends EventEmitter {
         } else {
           this.send({ guild_id: this.guildId, channel_id: null })
           this.aqua?.destroyPlayer?.(this.guildId)
-          if (this.nodes?.connected)
+          if (this.nodes?.isUsable)
             this.nodes.rest
               ?.destroyPlayer(this.guildId, abortSignal)
               .catch((error) => {

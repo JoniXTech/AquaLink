@@ -475,19 +475,19 @@ class Aqua extends EventEmitter {
     ) {
       return this._leastUsedNodesCache
     }
-    const connected = []
+    const usable = []
     for (const n of this.nodeMap.values()) {
-      if (n.connected) connected.push(n)
+      if (n.isUsable) usable.push(n)
     }
     let sorted
     if (this.loadBalancer === 'leastRest') {
-      sorted = connected.sort(
+      sorted = usable.sort(
         (a, b) => (a.rest?.calls || 0) - (b.rest?.calls || 0)
       )
     } else if (this.loadBalancer === 'random') {
-      sorted = connected.sort(() => Math.random() - 0.5)
+      sorted = usable.sort(() => Math.random() - 0.5)
     } else {
-      const withLoads = connected.map((n) => ({
+      const withLoads = usable.map((n) => ({
         node: n,
         load: this._getNodeLoad(n)
       }))
@@ -693,7 +693,7 @@ class Aqua extends EventEmitter {
     const lower = region.toLowerCase()
     const filtered = []
     for (const n of this.nodeMap.values()) {
-      if (n.connected && n.regions?.includes(lower)) filtered.push(n)
+      if (n.isUsable && n.regions?.includes(lower)) filtered.push(n)
     }
     return Object.freeze(
       filtered.sort((a, b) => this._getNodeLoad(a) - this._getNodeLoad(b))
@@ -807,14 +807,14 @@ class Aqua extends EventEmitter {
     if (!nodes) return this._chooseLeastBusyNode(this.leastUsedNodes)
     if (nodes instanceof Node) return nodes
     if (Array.isArray(nodes)) {
-      const candidates = nodes.filter((n) => n?.connected)
+      const candidates = nodes.filter((n) => n?.isUsable)
       return this._chooseLeastBusyNode(
         candidates.length ? candidates : this.leastUsedNodes
       )
     }
     if (typeof nodes === 'string') {
       const node = this.nodeMap.get(nodes)
-      return node?.connected
+      return node?.isUsable
         ? node
         : this._chooseLeastBusyNode(this.leastUsedNodes)
     }

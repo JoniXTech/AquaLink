@@ -185,6 +185,10 @@ class Node {
     return privateData.get(this)?.boundHandlers
   }
 
+  get isUsable() {
+    return this.connected && !!this.sessionId
+  }
+
   _clearSession() {
     this.sessionId = null
     delete this._headers['Session-Id']
