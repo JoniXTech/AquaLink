@@ -3,7 +3,8 @@ const YT_ID_REGEX =
 
 const _h = {
   str: (v, d = '') => (typeof v === 'string' ? v : d),
-  num: (v, d = 0) => (Number.isFinite(v) ? v : d)
+  num: (v, d = 0) => (Number.isFinite(v) ? v : d),
+  requesterTag: (r) => (r ? `${r.id}:${r.username}` : null)
 }
 
 class Track {
@@ -62,6 +63,16 @@ class Track {
     if (this._artworkCache !== undefined) return this._artworkCache
     this._artworkCache = this._computeArtwork()
     return this._artworkCache
+  }
+
+  toJSON() {
+    return {
+      encoded: this.track,
+      info: { ...this.info },
+      pluginInfo: this.pluginInfo,
+      userData: this.userData,
+      requester: _h.requesterTag(this.requester)
+    }
   }
 
   async resolve(aqua, opts = {}) {
