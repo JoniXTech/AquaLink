@@ -672,7 +672,13 @@ class Node {
         pc = payload.cpu
       if (pc.cores !== undefined) c.cores = pc.cores
       if (pc.systemLoad !== undefined) c.systemLoad = pc.systemLoad
-      if (pc.lavalinkLoad !== undefined) c.lavalinkLoad = pc.lavalinkLoad
+      if (pc.nodelinkLoad !== undefined) {
+        c.nodelinkLoad = pc.nodelinkLoad
+        delete c.lavalinkLoad
+      } else if (pc.lavalinkLoad !== undefined) {
+        c.lavalinkLoad = pc.lavalinkLoad
+        delete c.nodelinkLoad
+      }
     }
 
     if (payload.frameStats) {

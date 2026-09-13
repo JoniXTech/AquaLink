@@ -964,6 +964,22 @@ declare module 'aqualink' {
     tracks: Track[]
   }
 
+  export interface LavalinkCpuStats {
+    cores: number
+    systemLoad: number
+    lavalinkLoad: number
+    nodelinkLoad?: never
+  }
+
+  export interface NodelinkCpuStats {
+    cores: number
+    systemLoad: number
+    nodelinkLoad: number
+    lavalinkLoad?: never
+  }
+
+  export type NodeCpuStats = LavalinkCpuStats | NodelinkCpuStats
+
   export interface NodeStats {
     players: number
     playingPlayers: number
@@ -974,11 +990,7 @@ declare module 'aqualink' {
       allocated: number
       reservable: number
     }
-    cpu: {
-      cores: number
-      systemLoad: number
-      lavalinkLoad: number
-    }
+    cpu: NodeCpuStats
     frameStats: {
       sent: number
       nulled: number
