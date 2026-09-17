@@ -297,6 +297,10 @@ declare module 'aqualink' {
     position: number
     timestamp: number
     ping: number
+    /**
+     * Whatever message object your library returned; aqualink only ever reads
+     * `.id` and calls `.delete()` on it. Never set by aqualink itself.
+     */
     nowPlayingMessage: unknown
     isAutoplayEnabled: boolean
     isAutoplay: boolean
@@ -468,7 +472,7 @@ declare module 'aqualink' {
 
     // Data Methods
     set(key: string, value: unknown): void
-    get<T = unknown>(key: string): T
+    get<T = unknown>(key: string): T | undefined
     clearData(): Player
 
     // Utility Methods
@@ -556,6 +560,12 @@ declare module 'aqualink' {
     track: string | null
     playlist: PlaylistInfo | null
     userData: Record<string, unknown> | null
+    /**
+     * Whatever you passed as `requester` to `resolve`/`search`; aqualink never
+     * inspects it beyond `.id` and `.username`. A track restored from a saved
+     * snapshot comes back as `{ id, username }`, because `toJSON()` stores the
+     * compact `"id:username"` form and `parseRequester` rebuilds it.
+     */
     requester: unknown
     nodes: Node
     node: Node | null
