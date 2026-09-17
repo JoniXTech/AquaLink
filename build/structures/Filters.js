@@ -161,6 +161,42 @@ class Filters {
     }
   }
 
+  toJSON() {
+    const f = this.filters
+    const snapshot = {
+      volume: f.volume,
+      equalizer: f.equalizer?.length
+        ? f.equalizer.map((band) => ({ ...band }))
+        : EMPTY_ARRAY,
+      pluginFilters: f.pluginFilters ? { ...f.pluginFilters } : null,
+      presets: { ...this.presets }
+    }
+    for (const key of Object.keys(FILTER_DEFAULTS)) {
+      snapshot[key] = f[key] ? { ...f[key] } : null
+    }
+    return snapshot
+  }
+
+  applySnapshot(snapshot) {
+    if (!snapshot) return this
+    const f = this.filters
+    if (typeof snapshot.volume === 'number') f.volume = snapshot.volume
+    f.equalizer = snapshot.equalizer?.length
+      ? snapshot.equalizer.map((band) => ({ ...band }))
+      : EMPTY_ARRAY
+    this._dirty.add('equalizer')
+    for (const key of Object.keys(FILTER_DEFAULTS)) {
+      f[key] = snapshot[key] ? { ...snapshot[key] } : null
+      this._dirty.add(key)
+    }
+    f.pluginFilters = snapshot.pluginFilters
+      ? { ...snapshot.pluginFilters }
+      : null
+    this._dirty.add('pluginFilters')
+    if (snapshot.presets) Object.assign(this.presets, snapshot.presets)
+    return this
+  }
+
   destroy() {
     for (const [key, value] of Object.entries(this.filters)) {
       if (value && typeof value === 'object' && key !== 'equalizer') {

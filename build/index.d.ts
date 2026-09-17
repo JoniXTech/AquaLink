@@ -311,7 +311,7 @@ declare module 'aqualink' {
     self_mute: boolean
 
     // Additional Internal Properties
-    previousTracks: CircularBuffer
+    previousTracks: CircularBuffer<Track>
     _updateBatcher: MicrotaskUpdateBatcher
     _dataStore: Map<string, unknown> | null
     _voiceDownSince: number
@@ -782,6 +782,9 @@ declare module 'aqualink' {
     clearFilters(): Promise<Filters>
     updateFilters(): Promise<Filters>
 
+    toJSON(): FiltersSnapshot
+    applySnapshot(snapshot: FiltersSnapshot | null): Filters
+
     // Internal Methods
     _setFilter(filterName: string, enabled: boolean, options?: unknown): Filters
     _scheduleUpdate(): Filters
@@ -852,17 +855,18 @@ declare module 'aqualink' {
     _flush(): Promise<void>
   }
 
-  export class CircularBuffer {
+  export class CircularBuffer<T = unknown> {
     constructor(size?: number)
-    buffer: unknown[]
+    buffer: (T | undefined)[]
     size: number
     index: number
     count: number
 
-    push(item: unknown): void
-    getLast(): unknown
+    push(item: T): void
+    getLast(): T | null
     clear(): void
-    toArray(): unknown[]
+    /** Oldest entry first */
+    toArray(): T[]
   }
 
   // Configuration Interfaces
@@ -1059,6 +1063,27 @@ declare module 'aqualink' {
   }
 
   // Filter Interfaces
+  export interface FiltersSnapshot {
+    volume: number
+    equalizer: EqualizerBand[]
+    karaoke: KaraokeSettings | null
+    timescale: TimescaleSettings | null
+    tremolo: TremoloSettings | null
+    vibrato: VibratoSettings | null
+    rotation: RotationSettings | null
+    distortion: DistortionSettings | null
+    channelMix: ChannelMixSettings | null
+    lowPass: LowPassSettings | null
+    pluginFilters: Record<string, unknown> | null
+    presets: {
+      bassboost: number | null
+      slowmode: boolean | null
+      nightcore: boolean | null
+      vaporwave: boolean | null
+      _8d: boolean | null
+    }
+  }
+
   export interface FilterOptions {
     volume?: number
     equalizer?: EqualizerBand[]
@@ -1218,10 +1243,17 @@ declare module 'aqualink' {
     position: number
     current: Track | null
     queue: Track[]
-    repeat: LoopMode
+    loop: LoopMode
     shuffle: boolean
     deaf: boolean
+    mute: boolean
     connected: boolean
+    filters: FiltersSnapshot | null
+    previousTracks: Track[]
+    previousIdentifiers: string[]
+    isAutoplayEnabled: boolean
+    autoplaySeed: Track | null
+    dataStore: [string, unknown][] | null
   }
 
   export interface BrokenPlayerState extends PlayerState {

@@ -454,7 +454,15 @@ class AquaRecovery {
       shuffle: player.shuffle,
       deaf: player.deaf ?? false,
       mute: !!player.mute,
-      connected: !!player.connected
+      connected: !!player.connected,
+      filters: player.filters?.toJSON?.() || null,
+      previousTracks: player.previousTracks?.toArray?.() || this.EMPTY_ARRAY,
+      previousIdentifiers: player.previousIdentifiers
+        ? Array.from(player.previousIdentifiers)
+        : this.EMPTY_ARRAY,
+      isAutoplayEnabled: !!player.isAutoplayEnabled,
+      autoplaySeed: player.autoplaySeed || null,
+      dataStore: player._dataStore ? Array.from(player._dataStore) : null
     }
   }
 
@@ -499,6 +507,21 @@ class AquaRecovery {
       if (typeof newPlayer.setVolume === 'function')
         ops.push(newPlayer.setVolume(state.volume))
       else newPlayer.volume = state.volume
+    }
+    if (state.filters && newPlayer.filters?.applySnapshot) {
+      ops.push(newPlayer.filters.applySnapshot(state.filters).updateFilters())
+    }
+    if (state.previousTracks?.length && newPlayer.previousTracks?.push) {
+      for (const track of state.previousTracks)
+        newPlayer.previousTracks.push(track)
+    }
+    if (state.previousIdentifiers?.length) {
+      newPlayer.previousIdentifiers = new Set(state.previousIdentifiers)
+    }
+    newPlayer.isAutoplayEnabled = !!state.isAutoplayEnabled
+    if (state.autoplaySeed) newPlayer.autoplaySeed = state.autoplaySeed
+    if (state.dataStore?.length && newPlayer.set) {
+      for (const [key, value] of state.dataStore) newPlayer.set(key, value)
     }
     if (state.queue?.length && newPlayer.queue?.add)
       newPlayer.queue.add(...state.queue)
