@@ -558,6 +558,7 @@ declare module 'aqualink' {
     requester: unknown
     nodes: Node
     node: Node | null
+    disposed: boolean
 
     // Internal Properties
     _infoCache: TrackInfo | null
@@ -719,9 +720,10 @@ declare module 'aqualink' {
     remove(track: Track): boolean
 
     /**
-     * Clears the queue
+     * Clears the queue, disposing every track unless `dispose` is false.
+     * Pass `{ dispose: false }` when the tracks are handed on elsewhere.
      */
-    clear(): void
+    clear(options?: { dispose?: boolean }): void
 
     /**
      * Shuffles the queue

@@ -653,7 +653,9 @@ class Player extends EventEmitter {
     this.previousTracks = null
     this.previousIdentifiers?.clear()
     this.previousIdentifiers = null
-    if (this.queue) {
+    if (this.queue && preserveTracks) {
+      this.queue.clear({ dispose: false })
+    } else if (this.queue) {
       for (
         let i = this.queue._head || 0;
         i < (this.queue._items?.length || 0);
@@ -1299,7 +1301,7 @@ class Player extends EventEmitter {
     if (this.current?.dispose && !preserveTracks) this.current.dispose()
     this.current = null
     this.position = this.timestamp = 0
-    this.queue?.clear()
+    this.queue?.clear({ dispose: !preserveTracks })
     return this
   }
 
