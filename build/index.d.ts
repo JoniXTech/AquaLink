@@ -755,6 +755,8 @@ declare module 'aqualink' {
       distortion: DistortionSettings | null
       channelMix: ChannelMixSettings | null
       lowPass: LowPassSettings | null
+      pluginFilters?: Record<string, unknown> | null
+      nodelinkFilters?: NodelinkFilters | null
     }
     presets: {
       bassboost: number | null
@@ -781,6 +783,22 @@ declare module 'aqualink' {
     set8D(enabled: boolean, options?: { rotationHz?: number }): Filters
     clearFilters(): Promise<Filters>
     updateFilters(): Promise<Filters>
+
+    setPluginFilters(filters: Record<string, unknown> | null): Filters
+    setPluginFilter(
+      name: string,
+      config: Record<string, unknown> | null
+    ): Filters
+    clearPluginFilters(): Filters
+
+    /** Pass null to disable. Only sent to nodes where isNodelink is true. */
+    setNodelinkFilter<K extends keyof NodelinkFilters>(
+      name: K,
+      config: NodelinkFilters[K] | null
+    ): Filters
+    clearNodelinkFilters(): Filters
+
+    destroy(): void
 
     toJSON(): FiltersSnapshot
     applySnapshot(snapshot: FiltersSnapshot | null): Filters
@@ -1063,6 +1081,127 @@ declare module 'aqualink' {
   }
 
   // Filter Interfaces
+  /** NodeLink animates parameter changes instead of jumping to them. */
+  export interface AnimationTransition {
+    durationMs: number
+    curve?: string
+  }
+
+  export interface EchoSettings {
+    delay?: number
+    feedback?: number
+    mix?: number
+    transition?: AnimationTransition
+    alpha?: number
+  }
+
+  export interface ReverbSettings {
+    roomSize?: number
+    damping?: number
+    wetLevel?: number
+    dryLevel?: number
+    width?: number
+    mix?: number
+    transition?: AnimationTransition
+    alpha?: number
+  }
+
+  export interface HighPassSettings {
+    smoothing?: number
+    targetAlpha?: number
+    transition?: AnimationTransition
+  }
+
+  export interface ChorusSettings {
+    rate?: number
+    depth?: number
+    feedback?: number
+    delay?: number
+    mix?: number
+    transition?: AnimationTransition
+    alpha?: number
+  }
+
+  export interface PhaserSettings {
+    rate?: number
+    depth?: number
+    feedback?: number
+    delay?: number
+    mix?: number
+    stages?: number
+    minFrequency?: number
+    maxFrequency?: number
+    transition?: AnimationTransition
+    alpha?: number
+  }
+
+  export interface FlangerSettings {
+    rate?: number
+    depth?: number
+    feedback?: number
+    delay?: number
+    mix?: number
+    transition?: AnimationTransition
+    alpha?: number
+  }
+
+  export interface SpatialSettings {
+    x?: number
+    y?: number
+    z?: number
+    depth?: number
+    rate?: number
+    transition?: AnimationTransition
+    alpha?: number
+  }
+
+  export interface CompressorSettings {
+    threshold?: number
+    ratio?: number
+    attack?: number
+    release?: number
+    gain?: number
+    makeupGain?: number
+    transition?: AnimationTransition
+    alpha?: number
+  }
+
+  export interface PhonographSettings {
+    frequency?: number
+    depth?: number
+    crackle?: number
+    flutter?: number
+    room?: number
+    micAgc?: number
+    drive?: number
+    transition?: AnimationTransition
+    alpha?: number
+  }
+
+  export interface TesseractSettings {
+    rotationHz?: number
+    transition?: AnimationTransition
+    alpha?: number
+  }
+
+  /**
+   * Filters NodeLink implements that Lavalink has no equivalent for. They are
+   * stored on any node but only sent to one where `isNodelink` is true, so a
+   * player that later moves onto a NodeLink node picks them up.
+   */
+  export interface NodelinkFilters {
+    echo?: EchoSettings
+    reverb?: ReverbSettings
+    highpass?: HighPassSettings
+    chorus?: ChorusSettings
+    phaser?: PhaserSettings
+    flanger?: FlangerSettings
+    spatial?: SpatialSettings
+    compressor?: CompressorSettings
+    phonograph?: PhonographSettings
+    tesseract?: TesseractSettings
+  }
+
   export interface FiltersSnapshot {
     volume: number
     equalizer: EqualizerBand[]
@@ -1075,6 +1214,7 @@ declare module 'aqualink' {
     channelMix: ChannelMixSettings | null
     lowPass: LowPassSettings | null
     pluginFilters: Record<string, unknown> | null
+    nodelinkFilters: NodelinkFilters | null
     presets: {
       bassboost: number | null
       slowmode: boolean | null
