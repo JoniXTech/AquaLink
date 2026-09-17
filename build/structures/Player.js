@@ -57,6 +57,37 @@ const AUTOPLAY_MAX = 3
 const BATCHER_POOL_SIZE = 2
 const INVALID_LOADS = new Set(['error', 'empty', 'LOAD_FAILED', 'NO_MATCHES'])
 
+// NodeLink playback config. Its sanitiser rebuilds each of these from zero
+// defaults and reads `enabled` as `=== true`, so a partial payload silently
+// turns off everything it does not mention. We keep a complete copy per player
+// and always send the whole object.
+const FADE_SECTIONS = Object.freeze([
+  'trackStart',
+  'trackEnd',
+  'trackStop',
+  'seek',
+  'pause',
+  'resume'
+])
+const FADE_TYPES = new Set(['volume', 'tape', 'scratch', 'both'])
+const CROSSFADE_CURVES = new Set(['linear', 'sine', 'sinusoidal'])
+
+const makeFadingConfig = () => {
+  const config = { enabled: false }
+  for (const key of FADE_SECTIONS)
+    config[key] = { duration: 0, curve: 'linear', type: 'volume' }
+  return config
+}
+
+const makeCrossfadeConfig = () => ({
+  enabled: false,
+  duration: 5000,
+  curve: 'sinusoidal',
+  mode: 'preload',
+  minBufferMs: 250,
+  bufferMs: 0
+})
+
 const _functions = {
   clamp(v) {
     const n = +v
@@ -227,6 +258,10 @@ class Player extends EventEmitter {
     this._reconnectTimers = null
     this._reconnectNonce = 0
     this._dataStore = null
+    this.fading = null
+    this.crossfade = null
+    this.ducking = false
+    this.loudnessNormalizer = false
 
     this.volume = _functions.clamp(options.defaultVolume || 100)
     this.loop = this._parseLoop(options.loop)
@@ -374,6 +409,108 @@ class Player extends EventEmitter {
 
   batchUpdatePlayer(data, immediate) {
     return this._updateBatcher.batch(data, immediate)
+  }
+
+  // Stored on any node, sent only to NodeLink. A player that later moves onto
+  // a NodeLink node has its config reapplied from the migration snapshot.
+  _sendNodelinkConfig(data, scope) {
+    if (this.destroyed || !this.nodes?.isNodelink) return this
+    this.batchUpdatePlayer(data).catch((error) =>
+      reportSuppressedError(this, scope, error, { guildId: this.guildId })
+    )
+    return this
+  }
+
+  setDucking(enabled) {
+    this.ducking = !!enabled
+    return this._sendNodelinkConfig(
+      { ducking: this.ducking },
+      'player.setDucking'
+    )
+  }
+
+  setFading(config) {
+    if (config === null) {
+      this.fading = makeFadingConfig()
+      return this._sendNodelinkConfig(
+        { fading: this.fading },
+        'player.setFading'
+      )
+    }
+    if (typeof config !== 'object') {
+      throw new TypeError(
+        `Player.setFading(): config must be an object or null, got ` +
+          typeof config
+      )
+    }
+
+    const merged = this.fading || makeFadingConfig()
+    if (typeof config.enabled === 'boolean') merged.enabled = config.enabled
+    for (const key of FADE_SECTIONS) {
+      const section = config[key]
+      if (!section || typeof section !== 'object') continue
+      const target = merged[key]
+      if (_functions.isNum(section.duration))
+        target.duration = Math.max(0, section.duration)
+      if (typeof section.curve === 'string') target.curve = section.curve
+      if (FADE_TYPES.has(section.type)) target.type = section.type
+    }
+    // parameters only; the `ducking` boolean is what switches it on
+    if (config.ducking && typeof config.ducking === 'object') {
+      merged.ducking = { ...(merged.ducking || {}), ...config.ducking }
+    }
+    this.fading = merged
+    return this._sendNodelinkConfig({ fading: merged }, 'player.setFading')
+  }
+
+  setCrossfade(config) {
+    if (config === null) {
+      this.crossfade = makeCrossfadeConfig()
+      return this._sendNodelinkConfig(
+        { crossfade: this.crossfade },
+        'player.setCrossfade'
+      )
+    }
+    if (typeof config !== 'object') {
+      throw new TypeError(
+        `Player.setCrossfade(): config must be an object or null, got ` +
+          typeof config
+      )
+    }
+
+    const merged = this.crossfade || makeCrossfadeConfig()
+    if (typeof config.enabled === 'boolean') merged.enabled = config.enabled
+    if (_functions.isNum(config.duration))
+      merged.duration = Math.max(
+        0,
+        Math.min(30000, Math.round(config.duration))
+      )
+    if (CROSSFADE_CURVES.has(config.curve)) merged.curve = config.curve
+    if (config.mode === 'stream' || config.mode === 'preload')
+      merged.mode = config.mode
+    if (_functions.isNum(config.minBufferMs))
+      merged.minBufferMs = Math.max(
+        20,
+        Math.min(30000, Math.round(config.minBufferMs))
+      )
+    if (_functions.isNum(config.bufferMs))
+      merged.bufferMs = Math.max(
+        0,
+        Math.min(30000, Math.round(config.bufferMs))
+      )
+    this.crossfade = merged
+    return this._sendNodelinkConfig(
+      { crossfade: merged },
+      'player.setCrossfade'
+    )
+  }
+
+  setLoudnessNormalizer(enabled) {
+    this.loudnessNormalizer = !!enabled
+    return this._sendNodelinkConfig(
+      { loudnessNormalizer: this.loudnessNormalizer },
+      'player.setLoudnessNormalizer'
+    )
   }
 
   setAutoplay(enabled) {

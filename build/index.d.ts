@@ -314,6 +314,10 @@ declare module 'aqualink' {
     previousTracks: CircularBuffer<Track>
     _updateBatcher: MicrotaskUpdateBatcher
     _dataStore: Map<string, unknown> | null
+    fading: FadingConfig | null
+    crossfade: CrossfadeConfig | null
+    ducking: boolean
+    loudnessNormalizer: boolean
     _voiceDownSince: number
     _voiceRecovering: boolean
     _voiceWatchdogTimer: NodeJS.Timer | null
@@ -453,6 +457,18 @@ declare module 'aqualink' {
     liveLyrics(guildId: string, state: boolean): Promise<unknown>
     autoplay(): Promise<Player>
     setAutoplay(enabled: boolean): Player
+
+    // NodeLink playback config. Stored on any node, sent only where
+    // node.isNodelink is true, and reapplied after a migration.
+    /**
+     * Auto-lowers music while someone speaks. This is the switch;
+     * fading.ducking only carries its parameters.
+     */
+    setDucking(enabled: boolean): Player
+    /** Merges into the player's complete fading config and sends all of it. */
+    setFading(config: FadingConfig | null): Player
+    setCrossfade(config: CrossfadeConfig | null): Player
+    setLoudnessNormalizer(enabled: boolean): Player
     updatePlayer(data: UpdatePlayerOptions['data']): Promise<unknown>
     cleanup(): Promise<void>
     getActiveMixer(guildId: string): Promise<unknown[]>
@@ -1189,6 +1205,47 @@ declare module 'aqualink' {
    * stored on any node but only sent to one where `isNodelink` is true, so a
    * player that later moves onto a NodeLink node picks them up.
    */
+  export interface FadingSection {
+    duration: number
+    curve?: string
+    type?: 'volume' | 'tape' | 'scratch' | 'both'
+  }
+
+  export interface DuckingConfig {
+    enabled?: boolean
+    duration?: number
+    /** 0..1 multiplier applied while someone is speaking */
+    targetVolume?: number
+    curve?: string
+  }
+
+  /**
+   * NodeLink rebuilds this from zero defaults on every update, so aqualink
+   * keeps a complete copy per player and always sends the whole object.
+   * `ducking` here only carries parameters; Player.setDucking() is the switch.
+   */
+  export interface FadingConfig {
+    enabled?: boolean
+    trackStart?: FadingSection
+    trackEnd?: FadingSection
+    trackStop?: FadingSection
+    seek?: FadingSection
+    pause?: FadingSection
+    resume?: FadingSection
+    ducking?: DuckingConfig
+  }
+
+  export interface CrossfadeConfig {
+    enabled?: boolean
+    /** clamped to 0..30000 by NodeLink */
+    duration?: number
+    curve?: 'linear' | 'sine' | 'sinusoidal'
+    mode?: 'preload' | 'stream'
+    /** clamped to 20..30000 */
+    minBufferMs?: number
+    bufferMs?: number
+  }
+
   export interface NodelinkFilters {
     echo?: EchoSettings
     reverb?: ReverbSettings
@@ -1394,6 +1451,10 @@ declare module 'aqualink' {
     isAutoplayEnabled: boolean
     autoplaySeed: Track | null
     dataStore: [string, unknown][] | null
+    fading: FadingConfig | null
+    crossfade: CrossfadeConfig | null
+    ducking: boolean
+    loudnessNormalizer: boolean
   }
 
   export interface BrokenPlayerState extends PlayerState {
