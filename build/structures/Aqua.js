@@ -757,8 +757,12 @@ class Aqua extends EventEmitter {
     return this._recovery.findBestNodeForRegion(region)
   }
 
-  async movePlayerToNode(guildId, targetNode, reason = 'region') {
-    return this._recovery.movePlayerToNode(guildId, targetNode, reason)
+  async movePlayerToNode(guildId, targetNode, reason = 'region', options = {}) {
+    return this._recovery.movePlayerToNode(guildId, targetNode, reason, options)
+  }
+
+  async rebuildPlayer(guildId, options = {}) {
+    return this._recovery.rebuildPlayer(guildId, options)
   }
 
   _capturePlayerState(player) {

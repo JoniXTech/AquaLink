@@ -143,8 +143,12 @@ declare module 'aqualink' {
     movePlayerToNode(
       guildId: string,
       targetNode: Node,
-      reason?: string
+      reason?: string,
+      options?: MovePlayerOptions
     ): Promise<Player>
+
+    /** Rebuilds a player in place, keeping its voice connection and state. */
+    rebuildPlayer(guildId: string, options?: RebuildPlayerOptions): Promise<Player>
 
     // Utility Methods
     /**
@@ -905,6 +909,20 @@ declare module 'aqualink' {
     trackResolveConcurrency?: number
     voiceStateInterval?: number
     brokenPlayerStorePath?: string
+  }
+
+  export interface MovePlayerOptions {
+    /** Allow a move onto the node the player is already on. */
+    force?: boolean
+    /** DELETE the node-side player before recreating it. */
+    destroyRemote?: boolean
+  }
+
+  export interface RebuildPlayerOptions {
+    node?: Node | string
+    reason?: string
+    /** Defaults to true. */
+    destroyRemote?: boolean
   }
 
   export interface VoiceStatePayload {
