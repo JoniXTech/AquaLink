@@ -179,6 +179,17 @@ class CircularBuffer {
       : null
   }
 
+  toArray() {
+    if (!this.count) return []
+    const out = new Array(this.count)
+    let idx = (this.index - this.count + this.size) % this.size
+    for (let i = 0; i < this.count; i++) {
+      out[i] = this.buffer[idx]
+      idx = (idx + 1) % this.size
+    }
+    return out
+  }
+
   clear() {
     if (!this.count) return
     this.buffer.fill(undefined)

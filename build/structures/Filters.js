@@ -41,6 +41,32 @@ const FILTER_KEYS = Object.freeze(
 const EMPTY_ARRAY = Object.freeze([])
 const EMPTY_OBJECT = Object.freeze({})
 
+// Filters NodeLink implements that Lavalink has no equivalent for. They are
+// sent as top-level keys alongside the standard ones, but only to NodeLink
+// nodes. NodeLink treats any missing field as 0/off, so there are no defaults
+// to merge, and `{ _disabled: true }` is how a filter is turned back off.
+const NODELINK_FILTERS = Object.freeze(
+  new Set([
+    'echo',
+    'reverb',
+    'highpass',
+    'chorus',
+    'phaser',
+    'flanger',
+    'spatial',
+    'compressor',
+    'phonograph',
+    'tesseract'
+  ])
+)
+
+const cloneFilterMap = (map) => {
+  if (!map) return null
+  const out = {}
+  for (const key of Object.keys(map)) out[key] = { ...map[key] }
+  return out
+}
+
 const FILTER_POOL_SIZE = 16
 const filterPool = {
   pools: Object.fromEntries(Object.keys(FILTER_DEFAULTS).map((k) => [k, []])),
@@ -149,7 +175,8 @@ class Filters {
       distortion: options.distortion ?? null,
       channelMix: options.channelMix ?? null,
       lowPass: options.lowPass ?? null,
-      pluginFilters: _utils.normalizePluginFilters(options.pluginFilters)
+      pluginFilters: _utils.normalizePluginFilters(options.pluginFilters),
+      nodelinkFilters: _utils.normalizePluginFilters(options.nodelinkFilters)
     }
 
     this.presets = {
@@ -161,10 +188,51 @@ class Filters {
     }
   }
 
+  toJSON() {
+    const f = this.filters
+    const snapshot = {
+      volume: f.volume,
+      equalizer: f.equalizer?.length
+        ? f.equalizer.map((band) => ({ ...band }))
+        : EMPTY_ARRAY,
+      pluginFilters: f.pluginFilters ? { ...f.pluginFilters } : null,
+      nodelinkFilters: cloneFilterMap(f.nodelinkFilters),
+      presets: { ...this.presets }
+    }
+    for (const key of Object.keys(FILTER_DEFAULTS)) {
+      snapshot[key] = f[key] ? { ...f[key] } : null
+    }
+    return snapshot
+  }
+
+  applySnapshot(snapshot) {
+    if (!snapshot) return this
+    const f = this.filters
+    if (typeof snapshot.volume === 'number') f.volume = snapshot.volume
+    f.equalizer = snapshot.equalizer?.length
+      ? snapshot.equalizer.map((band) => ({ ...band }))
+      : EMPTY_ARRAY
+    this._dirty.add('equalizer')
+    for (const key of Object.keys(FILTER_DEFAULTS)) {
+      f[key] = snapshot[key] ? { ...snapshot[key] } : null
+      this._dirty.add(key)
+    }
+    f.pluginFilters = snapshot.pluginFilters
+      ? { ...snapshot.pluginFilters }
+      : null
+    this._dirty.add('pluginFilters')
+    f.nodelinkFilters = cloneFilterMap(snapshot.nodelinkFilters)
+    if (f.nodelinkFilters) {
+      for (const name of Object.keys(f.nodelinkFilters)) this._dirty.add(name)
+    }
+    if (snapshot.presets) Object.assign(this.presets, snapshot.presets)
+    return this
+  }
+
   destroy() {
     for (const [key, value] of Object.entries(this.filters)) {
       if (value && typeof value === 'object' && key !== 'equalizer') {
-        if (key === 'pluginFilters') continue
+        if (key === 'pluginFilters' || key === 'nodelinkFilters') continue
         filterPool.release(key, value)
       }
     }
@@ -273,6 +341,40 @@ class Filters {
     const current = this.filters.pluginFilters || EMPTY_OBJECT
     if (current[name] === config) return this
     return this.setPluginFilters({ ...current, [name]: config })
+  }
+
+  setNodelinkFilter(name, config) {
+    if (!NODELINK_FILTERS.has(name))
+      throw new TypeError(`Unknown NodeLink filter: ${name}`)
+
+    const current = this.filters.nodelinkFilters
+    if (!config) {
+      // NodeLink ignores a missing key, so an explicit _disabled is the only
+      // way to switch one off once it has been sent
+      if (!current?.[name] || current[name]._disabled) return this
+      current[name] = { _disabled: true }
+      this._dirty.add(name)
+      return this._scheduleUpdate()
+    }
+
+    const next = current ? { ...current } : {}
+    next[name] = { ...config }
+    this.filters.nodelinkFilters = next
+    this._dirty.add(name)
+    return this._scheduleUpdate()
+  }
+
+  clearNodelinkFilters() {
+    const current = this.filters.nodelinkFilters
+    if (!current) return this
+    let changed = false
+    for (const name of Object.keys(current)) {
+      if (current[name]?._disabled) continue
+      current[name] = { _disabled: true }
+      this._dirty.add(name)
+      changed = true
+    }
+    return changed ? this._scheduleUpdate() : this
   }
 
   clearPluginFilters() {
@@ -391,6 +493,15 @@ class Filters {
       changed = true
     }
 
+    if (f.nodelinkFilters) {
+      for (const name of Object.keys(f.nodelinkFilters)) {
+        if (f.nodelinkFilters[name]?._disabled) continue
+        f.nodelinkFilters[name] = { _disabled: true }
+        this._dirty.add(name)
+        changed = true
+      }
+    }
+
     for (const key in this.presets) {
       if (this.presets[key] !== null) this.presets[key] = null
     }
@@ -416,6 +527,13 @@ class Filters {
     }
     payload.pluginFilters = this.filters.pluginFilters || {}
 
+    const nodelinkFilters = this.filters.nodelinkFilters
+    const sendNodelink = !!nodelinkFilters && !!this.player.nodes?.isNodelink
+    if (sendNodelink) {
+      for (const key of Object.keys(nodelinkFilters))
+        payload[key] = nodelinkFilters[key]
+    }
+
     for (const key of dirtyKeys) this._dirty.delete(key)
 
     try {
@@ -426,6 +544,15 @@ class Filters {
     } catch (error) {
       for (const key of dirtyKeys) this._dirty.add(key)
       throw error
+    }
+
+    // a disable has now been delivered, so stop resending it
+    if (sendNodelink) {
+      for (const key of Object.keys(nodelinkFilters)) {
+        if (nodelinkFilters[key]?._disabled) delete nodelinkFilters[key]
+      }
+      if (!Object.keys(nodelinkFilters).length)
+        this.filters.nodelinkFilters = null
     }
     return this
   }
