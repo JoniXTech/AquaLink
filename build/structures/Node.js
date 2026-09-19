@@ -156,6 +156,9 @@ class Node {
       cpu: { cores: 0, systemLoad: 0, lavalinkLoad: 0 },
       frameStats: { sent: 0, nulled: 0, deficit: 0 }
     }
+    // 0 until the first stats frame, so a node that has never reported is
+    // scored as an unknown rather than as an idle one.
+    this.statsUpdatedAt = 0
 
     this._clientName = `Aqua/${this.aqua.version} https://github.com/ToddyTheNoobDud/AquaLink`
     this._headers = this._buildHeaders()
@@ -187,6 +190,11 @@ class Node {
 
   get isUsable() {
     return this.connected && !!this.sessionId
+  }
+
+  /** The balancer's current score for this node. Lower is better. */
+  get score() {
+    return this.aqua?.scoreNode?.(this) ?? Number.POSITIVE_INFINITY
   }
 
   _clearSession() {
@@ -649,8 +657,11 @@ class Node {
   }
 
   _updateStats(payload) {
-    if (!payload) return
+    if (!payload || !this.stats) return
     const s = this.stats
+    this.statsUpdatedAt = Date.now()
+    // Selection reads these, and nothing used to tell it they had moved.
+    this.aqua?._invalidateCache?.()
 
     if (payload.players !== undefined) s.players = payload.players
     if (payload.playingPlayers !== undefined)

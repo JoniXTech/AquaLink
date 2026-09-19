@@ -25,7 +25,16 @@ const BROKEN_PLAYER_TTL = 300000
 const FAILOVER_CLEANUP_TTL = 600000
 const PLAYER_BATCH_SIZE = 20
 const RECONNECT_DELAY = 400
-const CACHE_VALID_TIME = 12000
+// Score weights. systemLoad is a 0-1 fraction of the whole machine on both
+// Lavalink and NodeLink, so CPU_WEIGHT is the cost of a fully pegged host.
+const CPU_WEIGHT = 100
+const PROCESS_CPU_WEIGHT = 25
+const PLAYER_WEIGHT = 0.75
+const MEMORY_WEIGHT = 40
+const MEMORY_PRESSURE_FROM = 0.9
+const REST_WEIGHT = 0.05
+// A node that has never sent stats is an unknown, not an idle one.
+const NO_STATS_PENALTY = 50
 const NODE_TIMEOUT = 30000
 const MAX_CACHE_SIZE = 20
 const MAX_FAILOVER_QUEUE = 50
@@ -43,6 +52,7 @@ const DEFAULT_OPTIONS = Object.freeze({
   autoResume: true,
   infiniteReconnects: true,
   loadBalancer: 'leastLoad',
+  nodeResolver: null,
   useHttp2: false,
   debugTrace: false,
   traceMaxEntries: TRACE_BUFFER_SIZE,
@@ -95,6 +105,10 @@ const _functions = {
       ? { id: str.substring(0, i), username: str.substring(i + 1) }
       : null
   },
+  clamp01: (v) => {
+    const n = Number(v)
+    return Number.isFinite(n) ? (n < 0 ? 0 : n > 1 ? 1 : n) : 0
+  },
   unrefTimeout: (fn, ms) => {
     const t = setTimeout(fn, ms)
     t.unref?.()
@@ -134,7 +148,9 @@ class Aqua extends EventEmitter {
     this.urlFilteringEnabled = merged.urlFilteringEnabled
     this.restrictedDomains = merged.restrictedDomains || []
     this.allowedDomains = merged.allowedDomains || []
-    this.loadBalancer = merged.loadBalancer
+    this._loadBalancer = merged.loadBalancer
+    this.nodeResolver =
+      typeof merged.nodeResolver === 'function' ? merged.nodeResolver : null
     this.autoRegionMigrate = merged.autoRegionMigrate
     this.useHttp2 = merged.useHttp2
     this.maxQueueSave = merged.maxQueueSave
@@ -166,8 +182,7 @@ class Aqua extends EventEmitter {
     this._guildLifecycleLocks = new Map()
     this._brokenPlayers = new Map()
     this._rebuildLocks = new Set()
-    this._leastUsedNodesCache = null
-    this._leastUsedNodesCacheTime = 0
+    this._selectionEpoch = 0
     this._nodeLoadCache = new Map()
     this._eventHandlers = null
     this._loading = false
@@ -469,66 +484,213 @@ class Aqua extends EventEmitter {
     this._recovery = null
   }
 
+  get loadBalancer() {
+    return this._loadBalancer
+  }
+
+  set loadBalancer(value) {
+    if (value === this._loadBalancer) return
+    this._loadBalancer = value
+    this._invalidateCache()
+  }
+
   get leastUsedNodes() {
-    const now = Date.now()
-    if (
-      this._leastUsedNodesCache &&
-      now - this._leastUsedNodesCacheTime < CACHE_VALID_TIME
-    ) {
-      return this._leastUsedNodesCache
-    }
+    return this._resolveNodes({
+      reason: 'order',
+      want: 'many',
+      candidates: this._usableNodes(),
+      region: null,
+      guildId: null
+    })
+  }
+
+  selectNode(reason = 'player', context = null) {
+    return this._resolveNodes({
+      reason,
+      want: 'one',
+      candidates: context?.candidates || this._usableNodes(),
+      region: context?.region || null,
+      guildId: context?.guildId || null
+    })
+  }
+
+  _usableNodes() {
     const usable = []
     for (const n of this.nodeMap.values()) {
       if (n.isUsable) usable.push(n)
     }
-    let sorted
-    if (this.loadBalancer === 'leastRest') {
-      sorted = usable.sort(
-        (a, b) => (a.rest?.calls || 0) - (b.rest?.calls || 0)
-      )
-    } else if (this.loadBalancer === 'random') {
-      sorted = usable.sort(() => Math.random() - 0.5)
-    } else {
-      const withLoads = usable.map((n) => ({
-        node: n,
-        load: this._getNodeLoad(n)
-      }))
-      withLoads.sort((a, b) => a.load - b.load)
-      sorted = withLoads.map((x) => x.node)
+    return usable
+  }
+
+  _resolveNodes(ctx) {
+    if (this.nodeResolver) {
+      const api = {
+        score: (node) => this.scoreNode(node),
+        sort: (nodes) => this._sortNodes(nodes || ctx.candidates),
+        best: (nodes) => this._bestNode(nodes || ctx.candidates)
+      }
+      let result = null
+      try {
+        result = this.nodeResolver(ctx, api)
+      } catch (error) {
+        reportSuppressedError(this, 'aqua.nodeResolver', error, {
+          reason: ctx.reason,
+          guildId: ctx.guildId
+        })
+      }
+      // Nullish means "use the built-in result", so a resolver can opt out
+      // per reason without reimplementing the balancer.
+      if (result) {
+        if (Array.isArray(result)) {
+          return ctx.want === 'one'
+            ? result[0] || null
+            : Object.freeze(result.slice())
+        }
+        return ctx.want === 'one' ? result : Object.freeze([result])
+      }
     }
-    this._leastUsedNodesCache = Object.freeze(sorted)
-    this._leastUsedNodesCacheTime = now
-    return this._leastUsedNodesCache
+
+    return ctx.want === 'one'
+      ? this._bestNode(ctx.candidates)
+      : this._sortNodes(ctx.candidates)
+  }
+
+  _sortNodes(nodes) {
+    const list = Array.isArray(nodes) ? nodes.slice() : []
+    if (list.length < 2) return Object.freeze(list)
+
+    if (this._loadBalancer === 'random') {
+      // A real shuffle, computed per call. The old comparator was biased and
+      // its result was then frozen for 12s, so every player in the window
+      // went to the same node.
+      for (let i = list.length - 1; i > 0; i--) {
+        const j = (Math.random() * (i + 1)) | 0
+        const t = list[i]
+        list[i] = list[j]
+        list[j] = t
+      }
+      return Object.freeze(list)
+    }
+
+    if (this._loadBalancer === 'leastRest') {
+      list.sort((a, b) => (a.rest?.calls || 0) - (b.rest?.calls || 0))
+      return Object.freeze(list)
+    }
+
+    const scored = list.map((n) => ({ node: n, score: this.scoreNode(n) }))
+    scored.sort((a, b) => a.score - b.score)
+    return Object.freeze(scored.map((x) => x.node))
+  }
+
+  _bestNode(nodes) {
+    if (!nodes?.length) return null
+    if (nodes.length === 1) return nodes[0]
+
+    if (this._loadBalancer === 'random') {
+      return nodes[(Math.random() * nodes.length) | 0]
+    }
+
+    const scoreOf =
+      this._loadBalancer === 'leastRest'
+        ? (n) => n.rest?.calls || 0
+        : (n) => this.scoreNode(n)
+
+    let best = nodes[0]
+    let bestScore = scoreOf(best)
+    for (let i = 1; i < nodes.length; i++) {
+      const score = scoreOf(nodes[i])
+      if (score < bestScore) {
+        best = nodes[i]
+        bestScore = score
+      }
+    }
+    return best
+  }
+
+  _chooseLeastBusyNode(nodes) {
+    return this._bestNode(nodes)
   }
 
   _invalidateCache() {
-    this._leastUsedNodesCache = null
-    this._leastUsedNodesCacheTime = 0
+    this._selectionEpoch++
+    if (this._nodeLoadCache.size) this._nodeLoadCache.clear()
+  }
+
+  /**
+   * Lower is better. `extraPlayers` accounts for players a caller is about to
+   * place but has not placed yet, so a batch does not all land on one node.
+   */
+  scoreNode(node, options = null) {
+    if (!node) return Number.POSITIVE_INFINITY
+
+    const extraPlayers = options?.extraPlayers || 0
+    const id = node.name || node.host
+    if (!extraPlayers) {
+      const cached = this._nodeLoadCache.get(id)
+      if (cached && cached.epoch === this._selectionEpoch) return cached.load
+    }
+
+    const stats = node.stats
+    const local = node.players?.size || 0
+    // Players created since the last stats frame are invisible to the node's
+    // own counters, so every new player used to land on the same node.
+    const unreported = Math.max(0, local - (stats?.players || 0))
+    const players =
+      ((stats?.playingPlayers || 0) + unreported + extraPlayers) * PLAYER_WEIGHT
+
+    let load
+    if (!stats || !node.statsUpdatedAt) {
+      // Scoring this 0, as it used to, made a node that has never reported --
+      // including one that was just destroyed -- the most attractive in the
+      // pool.
+      load = NO_STATS_PENALTY + players
+    } else {
+      const cpu = stats.cpu
+      // Not divided by cores: both servers already report systemLoad as a
+      // 0-1 fraction of the whole machine.
+      const systemLoad = _functions.clamp01(cpu?.systemLoad)
+      // NodeLink reports 0 outside worker mode, so this can only add.
+      const processLoad = _functions.clamp01(
+        cpu?.nodelinkLoad ?? cpu?.lavalinkLoad
+      )
+      load =
+        systemLoad * CPU_WEIGHT + processLoad * PROCESS_CPU_WEIGHT + players
+
+      // Heap against total RAM on NodeLink, JVM heap against max heap on
+      // Lavalink: not comparable between node types, so memory is only a
+      // guard against a node that is genuinely running out.
+      const memory = stats.memory
+      const reservable = memory?.reservable || 0
+      if (reservable > 0) {
+        const used = memory.used / reservable
+        if (used > MEMORY_PRESSURE_FROM) {
+          load +=
+            ((used - MEMORY_PRESSURE_FROM) / (1 - MEMORY_PRESSURE_FROM)) *
+            MEMORY_WEIGHT
+        }
+      }
+
+      // Live in-flight REST depth. A tiebreaker, not a statement about the
+      // node's health.
+      load += (node.rest?.calls || 0) * REST_WEIGHT
+
+      // frameStats is deliberately not read. NodeLink's counters are
+      // cumulative since the current audio stream started and reset on every
+      // track change, and its deficit is always equal to nulled, so they are
+      // not comparable with Lavalink's per-minute window.
+    }
+
+    if (!extraPlayers) {
+      if (this._nodeLoadCache.size >= MAX_CACHE_SIZE) {
+        this._nodeLoadCache.delete(this._nodeLoadCache.keys().next().value)
+      }
+      this._nodeLoadCache.set(id, { load, epoch: this._selectionEpoch })
+    }
+    return load
   }
 
   _getNodeLoad(node) {
-    const id = node.name || node.host
-    const now = Date.now()
-    const cached = this._nodeLoadCache.get(id)
-    if (cached && now - cached.time < 5000) {
-      this._nodeLoadCache.delete(id)
-      this._nodeLoadCache.set(id, cached)
-      return cached.load
-    }
-    const stats = node?.stats
-    if (!stats) return 0
-    const cores = Math.max(1, stats.cpu?.cores || 1)
-    const reservable = Math.max(1, stats.memory?.reservable || 1)
-    const load =
-      (stats.cpu ? stats.cpu.systemLoad / cores : 0) * 100 +
-      (stats.playingPlayers || 0) * 0.75 +
-      (stats.memory ? stats.memory.used / reservable : 0) * 40 +
-      (node.rest?.calls || 0) * 0.001
-    if (this._nodeLoadCache.size >= MAX_CACHE_SIZE) {
-      this._nodeLoadCache.delete(this._nodeLoadCache.keys().next().value)
-    }
-    this._nodeLoadCache.set(id, { load, time: now })
-    return load
+    return this.scoreNode(node)
   }
 
   async init(clientId) {
@@ -691,15 +853,20 @@ class Aqua extends EventEmitter {
   }
 
   fetchRegion(region) {
-    if (!region) return this.leastUsedNodes
-    const lower = region.toLowerCase()
-    const filtered = []
-    for (const n of this.nodeMap.values()) {
-      if (n.isUsable && n.regions?.includes(lower)) filtered.push(n)
-    }
-    return Object.freeze(
-      filtered.sort((a, b) => this._getNodeLoad(a) - this._getNodeLoad(b))
-    )
+    const usable = this._usableNodes()
+    if (!region) return this._sortNodes(usable)
+
+    const lower = String(region).toLowerCase()
+    const matched = usable.filter((n) => n.regions?.includes(lower))
+    // A region no node carries used to come back empty, which made
+    // createConnection throw rather than use any node at all.
+    return this._resolveNodes({
+      reason: 'region',
+      want: 'many',
+      candidates: matched.length ? matched : usable,
+      region: lower,
+      guildId: null
+    })
   }
 
   createConnection(options) {
@@ -714,11 +881,22 @@ class Aqua extends EventEmitter {
       }
       return existing
     }
-    const candidates = options.region
-      ? this.fetchRegion(options.region)
-      : this.leastUsedNodes
-    if (!candidates.length) throw new Error('No nodes available')
-    return this.createPlayer(candidates[0], options)
+    const usable = this._usableNodes()
+    if (!usable.length) throw new Error('No nodes available')
+
+    const region = options.region ? String(options.region).toLowerCase() : null
+    const matched = region
+      ? usable.filter((n) => n.regions?.includes(region))
+      : usable
+    const node = this._resolveNodes({
+      reason: 'player',
+      want: 'one',
+      candidates: matched.length ? matched : usable,
+      region,
+      guildId: String(options.guildId)
+    })
+    if (!node) throw new Error('No nodes available')
+    return this.createPlayer(node, options)
   }
 
   createPlayer(node, options) {
@@ -745,6 +923,7 @@ class Aqua extends EventEmitter {
       })
     }
     node?.players?.add?.(player)
+    this._invalidateCache()
     player.once('destroy', () => this._handlePlayerDestroy(player))
     player.connect(options)
     this.emit(AqualinkEvents.PlayerCreate, player)
@@ -753,6 +932,7 @@ class Aqua extends EventEmitter {
 
   _handlePlayerDestroy(player) {
     player.nodes?.players?.delete?.(player)
+    this._invalidateCache()
     const guildId = String(player.guildId)
     if (this.players.get(guildId) === player) this.players.delete(guildId)
     if (this.debugTrace) {
@@ -806,36 +986,25 @@ class Aqua extends EventEmitter {
   }
 
   _getRequestNode(nodes) {
-    if (!nodes) return this._chooseLeastBusyNode(this.leastUsedNodes)
-    if (nodes instanceof Node) return nodes
-    if (Array.isArray(nodes)) {
-      const candidates = nodes.filter((n) => n?.isUsable)
-      return this._chooseLeastBusyNode(
-        candidates.length ? candidates : this.leastUsedNodes
-      )
-    }
-    if (typeof nodes === 'string') {
-      const node = this.nodeMap.get(nodes)
-      return node?.isUsable
-        ? node
-        : this._chooseLeastBusyNode(this.leastUsedNodes)
-    }
-    throw new TypeError(`Invalid nodes: ${typeof nodes}`)
-  }
+    let candidates = null
 
-  _chooseLeastBusyNode(nodes) {
-    if (!nodes?.length) return null
-    if (nodes.length === 1) return nodes[0]
-    let best = nodes[0],
-      bestScore = this._getNodeLoad(best)
-    for (let i = 1; i < nodes.length; i++) {
-      const score = this._getNodeLoad(nodes[i])
-      if (score < bestScore) {
-        best = nodes[i]
-        bestScore = score
+    if (nodes) {
+      if (nodes instanceof Node) {
+        // An explicit node used to be returned even when it was unusable,
+        // which turned one dead node into a failed search.
+        if (nodes.isUsable) return nodes
+      } else if (Array.isArray(nodes)) {
+        const filtered = nodes.filter((n) => n?.isUsable)
+        if (filtered.length) candidates = filtered
+      } else if (typeof nodes === 'string') {
+        const node = this.nodeMap.get(nodes)
+        if (node?.isUsable) return node
+      } else {
+        throw new TypeError(`Invalid nodes: ${typeof nodes}`)
       }
     }
-    return best
+
+    return this.selectNode('rest', { candidates })
   }
 
   _constructResponse(response, requester, node) {

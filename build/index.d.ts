@@ -28,6 +28,7 @@ declare module 'aqualink' {
     restrictedDomains: string[]
     allowedDomains: string[]
     loadBalancer: LoadBalancerStrategy
+    nodeResolver: NodeResolver | null
     send: (payload: Record<string, unknown>) => void
     autoRegionMigrate: boolean
     persistTracks: 'uri' | 'full'
@@ -45,15 +46,19 @@ declare module 'aqualink' {
     _lastFailoverAttempt: Map<string, number>
     _brokenPlayers: Map<string, BrokenPlayerState>
     _rebuildLocks: Set<string>
-    _leastUsedNodesCache: Node[] | null
-    _leastUsedNodesCacheTime: number
-    _nodeLoadCache: Map<string, { load: number; time: number }>
+    _selectionEpoch: number
+    _nodeLoadCache: Map<string, { load: number; epoch: number }>
     _cleanupTimer: NodeJS.Timer | null
     _onNodeConnect?: (node: Node) => void
     _onNodeDisconnect?: (node: Node) => void
 
     // Getters
     get leastUsedNodes(): Node[]
+
+    /** Picks one node the way every internal call site does. */
+    selectNode(reason?: NodeSelectReason, context?: NodeSelectContext): Node | null
+    /** The balancer's score for a node. Lower is better. */
+    scoreNode(node: Node, options?: { extraPlayers?: number }): number
 
     // Core Methods
     /**
@@ -155,6 +160,10 @@ declare module 'aqualink' {
 
     // Internal Methods
     _invalidateCache(): void
+    _usableNodes(): Node[]
+    _sortNodes(nodes: Node[]): Node[]
+    _bestNode(nodes: Node[]): Node | null
+    /** @deprecated use scoreNode */
     _getNodeLoad(node: Node): number
     _createNode(options: NodeOptions): Promise<Node>
     _destroyNode(identifier: string): void
@@ -234,6 +243,9 @@ declare module 'aqualink' {
     reconnectTimeoutId: NodeJS.Timeout | null
     isDestroyed: boolean
     stats: NodeStats
+    /** `Date.now()` of the last stats frame, 0 if none has arrived. */
+    statsUpdatedAt: number
+    readonly score: number
     players: Set<Player>
     options: NodeOptions
 
@@ -879,6 +891,7 @@ declare module 'aqualink' {
     restrictedDomains?: string[]
     allowedDomains?: string[]
     loadBalancer?: LoadBalancerStrategy
+    nodeResolver?: NodeResolver
     failoverOptions?: FailoverOptions
     useHttp2?: boolean
     autoRegionMigrate?: boolean
@@ -1422,6 +1435,40 @@ declare module 'aqualink' {
   export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
 
   export type LoadBalancerStrategy = 'leastLoad' | 'leastRest' | 'random'
+
+  export type NodeSelectReason =
+    | 'player'
+    | 'rest'
+    | 'order'
+    | 'failover'
+    | 'restore'
+    | 'region'
+
+  export interface NodeSelectContext {
+    candidates?: Node[] | null
+    region?: string | null
+    guildId?: string | null
+  }
+
+  export interface NodeResolverContext {
+    reason: NodeSelectReason
+    want: 'one' | 'many'
+    candidates: Node[]
+    region: string | null
+    guildId: string | null
+  }
+
+  export interface NodeResolverApi {
+    score(node: Node): number
+    sort(nodes?: Node[]): Node[]
+    best(nodes?: Node[]): Node | null
+  }
+
+  /** Return nullish to fall through to the built-in balancer. */
+  export type NodeResolver = (
+    ctx: NodeResolverContext,
+    api: NodeResolverApi
+  ) => Node | Node[] | null | undefined
 
   export type EventHandler<T = unknown> = (...args: T[]) => void | Promise<void>
 
