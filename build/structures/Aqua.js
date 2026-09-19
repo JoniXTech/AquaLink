@@ -71,6 +71,9 @@ const DEFAULT_OPTIONS = Object.freeze({
   persistTracks: 'uri',
   maxTracksRestore: 20,
   trackResolveConcurrency: 4,
+  restTimeout: 30000,
+  restConcurrency: 32,
+  restSearchConcurrency: 16,
   brokenPlayerStorePath: null,
   voiceStateInterval: VOICE_STATE_QUEUE_INTERVAL
 })
@@ -1082,7 +1085,7 @@ class Aqua extends EventEmitter {
     if (player?.nodes?.players?.has?.(player)) this._handlePlayerDestroy(player)
   }
 
-  async resolve({ query, source, requester, nodes }) {
+  async resolve({ query, source, requester, nodes, signal, timeout }) {
     if (!this.initiated) throw new Error('Aqua not initialized')
     const node = this._getRequestNode(nodes)
     if (!node) throw new Error('No nodes available')
@@ -1091,7 +1094,10 @@ class Aqua extends EventEmitter {
       source || this.defaultSearchPlatform
     )
     try {
-      const response = await node.rest.loadTracks(formatted)
+      const response = await node.rest.loadTracks(formatted, {
+        signal,
+        timeout
+      })
       if (
         !response ||
         response.loadType === 'empty' ||
@@ -1100,7 +1106,8 @@ class Aqua extends EventEmitter {
         return EMPTY_TRACKS_RESPONSE
       return this._constructResponse(response, requester, node)
     } catch (error) {
-      if (error?.name === 'AbortError') throw new Error('Request timeout')
+      // Reachable now that Rest honours a signal; it never was before.
+      if (error?.name === 'AbortError') throw error
       const err = new Error(`Resolve failed: ${error?.message || error}`)
       if (error?.statusCode != null) err.statusCode = error.statusCode
       if (error?.body) err.body = error.body

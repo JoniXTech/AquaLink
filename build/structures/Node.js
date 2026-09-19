@@ -106,6 +106,20 @@ class Node {
   static WS_CLOSE_NORMAL = 1000
   static DEFAULT_MAX_PAYLOAD = 1048576
   static DEFAULT_HANDSHAKE_TIMEOUT = 15000
+  static DEFAULT_REST_TIMEOUT = 30000
+  static AGENT_OPTIONS = Object.freeze([
+    'maxSockets',
+    'maxFreeSockets',
+    'freeSocketTimeout',
+    'keepAliveMsecs',
+    'maxCachedSessions',
+    'rejectUnauthorized',
+    'ca',
+    'cert',
+    'key',
+    'passphrase',
+    'servername'
+  ])
   static INFO_FETCH_TIMEOUT = 10000
   static INFINITE_BACKOFF = 10000
 
@@ -120,6 +134,21 @@ class Node {
     this.regions = connOptions.regions || []
     this.ssl = !!connOptions.ssl || !!connOptions.secure || false
     this.wsUrl = _functions.buildWsUrl(this.host, this.port, this.ssl)
+
+    // Rest reads these off the node. Nothing ever copied them here, so the
+    // whole TLS block in Rest._setupAgent was unreachable and the socket
+    // defaults were unconditional. Per node first, then the Aqua-wide value.
+    // The socket knobs are inert on Bun (see Rest._setupAgent).
+    for (const key of Node.AGENT_OPTIONS) {
+      const value = connOptions[key] ?? options[key]
+      if (value !== undefined) this[key] = value
+    }
+
+    this.restTimeout =
+      connOptions.restTimeout ?? options.restTimeout ?? Node.DEFAULT_REST_TIMEOUT
+    this.restConcurrency = connOptions.restConcurrency ?? options.restConcurrency
+    this.restSearchConcurrency =
+      connOptions.restSearchConcurrency ?? options.restSearchConcurrency
 
     this.rest = new Rest(aqua, this)
 
