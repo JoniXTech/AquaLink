@@ -12,6 +12,7 @@ declare module 'aqualink' {
     players: Map<string, Player>
     clientId: string | null
     initiated: boolean
+    destroyed: boolean
     version: string
     options: AquaOptions
     failoverOptions: FailoverOptions
@@ -35,6 +36,7 @@ declare module 'aqualink' {
     maxTracksRestore: number
     trackResolveConcurrency: number
     brokenPlayerStorePath: string
+    voiceStateInterval: number
 
     // Internal State Management
     _nodeStates: Map<
@@ -151,7 +153,11 @@ declare module 'aqualink' {
     destroy(): void
 
     getTrace(limit?: number): TraceEntry[]
+
+    queueVoiceStateUpdate(data: VoiceStatePayload): boolean
     getVoiceStateQueueDelay(guildId: string): number
+    /** Resolves once the guild's queued voice packets, or all of them, have been handed to `send`. */
+    flushVoiceState(guildId?: string | null): Promise<void>
 
     // Internal Methods
     _invalidateCache(): void
@@ -297,6 +303,8 @@ declare module 'aqualink' {
     timestamp: number
     ping: number
     nowPlayingMessage: unknown
+    /** Settles once this player's leave packet has been handed to `send`. */
+    leaveSent: Promise<void> | null
     isAutoplayEnabled: boolean
     isAutoplay: boolean
     autoplaySeed: AutoplaySeed | null
@@ -425,6 +433,7 @@ declare module 'aqualink' {
      * Disconnects the player from voice
      */
     disconnect(): Player
+    _queueLeave(): Promise<void>
 
     /**
      * Shuffles the queue
@@ -894,7 +903,16 @@ declare module 'aqualink' {
     maxQueueSave?: number
     maxTracksRestore?: number
     trackResolveConcurrency?: number
+    voiceStateInterval?: number
     brokenPlayerStorePath?: string
+  }
+
+  export interface VoiceStatePayload {
+    guild_id: string
+    channel_id: string | null
+    self_deaf?: boolean
+    self_mute?: boolean
+    txId?: number
   }
 
   export interface FailoverOptions {
