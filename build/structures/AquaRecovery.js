@@ -462,7 +462,11 @@ class AquaRecovery {
         : this.EMPTY_ARRAY,
       isAutoplayEnabled: !!player.isAutoplayEnabled,
       autoplaySeed: player.autoplaySeed || null,
-      dataStore: player._dataStore ? Array.from(player._dataStore) : null
+      dataStore: player._dataStore ? Array.from(player._dataStore) : null,
+      fading: player.fading ? JSON.parse(JSON.stringify(player.fading)) : null,
+      crossfade: player.crossfade ? { ...player.crossfade } : null,
+      ducking: !!player.ducking,
+      loudnessNormalizer: !!player.loudnessNormalizer
     }
   }
 
@@ -523,6 +527,13 @@ class AquaRecovery {
     if (state.dataStore?.length && newPlayer.set) {
       for (const [key, value] of state.dataStore) newPlayer.set(key, value)
     }
+    // fading carries ducking's parameters and must land before the toggle
+    if (state.fading && newPlayer.setFading) newPlayer.setFading(state.fading)
+    if (state.crossfade && newPlayer.setCrossfade)
+      newPlayer.setCrossfade(state.crossfade)
+    if (state.ducking && newPlayer.setDucking) newPlayer.setDucking(true)
+    if (state.loudnessNormalizer && newPlayer.setLoudnessNormalizer)
+      newPlayer.setLoudnessNormalizer(true)
     if (state.queue?.length && newPlayer.queue?.add)
       newPlayer.queue.add(...state.queue)
     if (state.current && this.aqua.failoverOptions.preservePosition) {
