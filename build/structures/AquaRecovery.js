@@ -229,13 +229,15 @@ class AquaRecovery {
   }
 
   async migratePlayersOptimized(players, nodes) {
-    const loads = nodes.map((node) => this.aqua._getNodeLoad(node))
     const counts = new Array(nodes.length).fill(0)
+    // Scored per pick rather than from one snapshot taken up front, and the
+    // players assigned so far are weighed on the balancer's own scale --
+    // a flat +1 each was a different unit from everything else in the score.
     const pickNode = () => {
       let bestIndex = 0
-      let bestScore = loads[0] + counts[0]
+      let bestScore = this.aqua.scoreNode(nodes[0], { extraPlayers: counts[0] })
       for (let i = 1; i < nodes.length; i++) {
-        const score = loads[i] + counts[i]
+        const score = this.aqua.scoreNode(nodes[i], { extraPlayers: counts[i] })
         if (score < bestScore) {
           bestIndex = i
           bestScore = score
@@ -336,7 +338,7 @@ class AquaRecovery {
       }
     }
     if (!candidates.length) return null
-    return this.aqua._chooseLeastBusyNode(candidates)
+    return this.aqua.selectNode('region', { candidates, region })
   }
 
   async rebuildPlayer(guildId, options = {}) {
@@ -674,7 +676,7 @@ class AquaRecovery {
 
         const targetNode = preferredNode?.isUsable
           ? preferredNode
-          : this.aqua.leastUsedNodes[0]
+          : this.aqua.selectNode('restore', { guildId: gId })
         if (!targetNode?.isUsable) {
           throw new Error(`No connected node available to restore guild ${gId}`)
         }
