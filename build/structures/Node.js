@@ -146,6 +146,9 @@ class Node {
 
     this.restTimeout =
       connOptions.restTimeout ?? options.restTimeout ?? Node.DEFAULT_REST_TIMEOUT
+    this.restConcurrency = connOptions.restConcurrency ?? options.restConcurrency
+    this.restSearchConcurrency =
+      connOptions.restSearchConcurrency ?? options.restSearchConcurrency
 
     this.rest = new Rest(aqua, this)
 

@@ -12,6 +12,7 @@ const {
 } = require('node:zlib')
 
 const { emitOperationalError } = require('./Reporting')
+const { RestLimiter, abortError, HIGH } = require('./RestLimiter')
 
 const unrefTimer = (t) => {
   try {
@@ -42,6 +43,16 @@ const ENCODING_NONE = 0,
 const MAX_RESPONSE_SIZE = 10485760
 const COMPRESSION_MIN_SIZE = 1024
 const API_VERSION = 'v4'
+// Searches, decodes and lyrics. Everything else is a player, session, voice
+// or node-control call and goes in the lane that is never made to wait.
+const LOW_PRIORITY_PREFIXES = Object.freeze([
+  '/v4/loadtracks',
+  '/v4/decodetrack',
+  '/v4/decodetracks',
+  '/v4/lyrics',
+  '/v4/loadlyrics',
+  '/v4/routeplanner'
+])
 const UTF8 = 'utf8'
 const JSON_CT = 'application/json'
 const HTTP2_THRESHOLD = 1024
@@ -179,6 +190,18 @@ class Rest {
     this._h2 = null
     this._h2Timer = null
     this.calls = 0
+    this.concurrency = Math.max(
+      1,
+      Number(node.restConcurrency ?? aqua?.options?.restConcurrency) || 32
+    )
+    this.searchConcurrency = Math.max(
+      1,
+      Number(
+        node.restSearchConcurrency ?? aqua?.options?.restSearchConcurrency
+      ) || 16
+    )
+    this._limiter = new RestLimiter(this.concurrency, this.searchConcurrency)
+    this.searchConcurrency = this._limiter.searchConcurrency
   }
 
   _setupAgent(node) {
@@ -230,7 +253,7 @@ class Rest {
     // None of the agent tuning above does anything on Bun either: it never
     // calls Agent.createConnection, and keepAlive, maxSockets, maxFreeSockets
     // and scheduling are all ignored, so one socket is opened per concurrent
-    // request.
+    // request. The limiter is what bounds concurrency there, not the agent.
     if (typeof this.agent.createConnection === 'function') {
       const origCreate = this.agent.createConnection.bind(this.agent)
       this.agent.createConnection = (options, cb) => {
@@ -373,7 +396,29 @@ class Rest {
     return result
   }
 
-  async makeRequest(method, endpoint, body) {
+  _priorityFor(endpoint) {
+    for (let i = 0; i < LOW_PRIORITY_PREFIXES.length; i++) {
+      if (endpoint.startsWith(LOW_PRIORITY_PREFIXES[i])) return 'low'
+    }
+    return HIGH
+  }
+
+  makeRequest(method, endpoint, body, options = null) {
+    const signal = options?.signal || null
+    if (signal?.aborted) return Promise.reject(abortError(signal.reason))
+
+    const timeout =
+      Number(options?.timeout) > 0 ? Number(options.timeout) : this.timeout
+    const lane = options?.priority || this._priorityFor(endpoint)
+
+    return this._limiter.run(
+      lane,
+      () => this._send(method, endpoint, body, signal, timeout),
+      signal
+    )
+  }
+
+  async _send(method, endpoint, body, signal, timeout) {
     const url = `${this.baseUrl}${endpoint}`
     const payload =
       body === undefined
@@ -388,19 +433,22 @@ class Rest {
     try {
       const resp =
         this.useHttp2 && payloadLen >= HTTP2_THRESHOLD
-          ? await this._h2Request(method, endpoint, headers, payload)
-          : await this._h1Request(method, url, headers, payload)
+          ? await this._h2Request(method, endpoint, headers, payload, signal, timeout)
+          : await this._h1Request(method, url, headers, payload, signal, timeout)
       return resp
     } finally {
       if (this.calls > 0) this.calls--
-      this._returnHeaders(headers)
+      // destroy() may have run while this was in flight.
+      if (this._headerPool) this._returnHeaders(headers)
     }
   }
 
-  _h1Request(method, url, headers, payload) {
+  _h1Request(method, url, headers, payload, signal = null, timeout = 0) {
+    const deadline = timeout > 0 ? timeout : this.timeout
     return new Promise((resolve, reject) => {
       let req,
         timer,
+        onAbort = null,
         done = false
 
       const finish = (ok, val) => {
@@ -410,19 +458,22 @@ class Rest {
           clearTimeout(timer)
           timer = null
         }
+        if (onAbort && signal) {
+          signal.removeEventListener('abort', onAbort)
+          onAbort = null
+        }
         if (req && !ok) req.destroy()
         ok ? resolve(val) : reject(val)
       }
 
       req = this.request(
         url,
-        { method, headers, agent: this.agent, timeout: this.timeout },
+        { method, headers, agent: this.agent, timeout: deadline },
         (res) => {
-          if (timer) {
-            clearTimeout(timer)
-            timer = null
-          }
-
+          // The timer deliberately keeps running past the headers. Clearing
+          // it here left the body transfer bounded only by socket
+          // inactivity, so a slow trickle could outlive the timeout by any
+          // amount.
           const status = res.statusCode || 0
           const cl = res.headers['content-length']
           const contentType = res.headers['content-type'] || ''
@@ -502,15 +553,21 @@ class Rest {
       )
 
       req.once('error', (e) => finish(false, e))
-      req.setTimeout(this.timeout, () => {
+      req.setTimeout(deadline, () => {
         req.destroy()
-        finish(false, new Error(`Socket timeout: ${this.timeout}ms`))
+        finish(false, new Error(`Socket timeout: ${deadline}ms`))
       })
       timer = setTimeout(
-        () => finish(false, new Error(`Request timeout: ${this.timeout}ms`)),
-        this.timeout
+        () => finish(false, new Error(`Request timeout: ${deadline}ms`)),
+        deadline
       )
       unrefTimer(timer)
+
+      if (signal) {
+        onAbort = () => finish(false, abortError(signal.reason))
+        signal.addEventListener('abort', onAbort, { once: true })
+      }
+
       payload ? req.end(payload) : req.end()
     })
   }
@@ -565,12 +622,14 @@ class Rest {
     }
   }
 
-  _h2Request(method, path, headers, payload) {
+  _h2Request(method, path, headers, payload, signal = null, timeout = 0) {
     const session = this._getH2Session()
+    const deadline = timeout > 0 ? timeout : this.timeout
 
     return new Promise((resolve, reject) => {
       let req,
         timer,
+        onAbort = null,
         done = false
 
       const finish = (ok, val) => {
@@ -579,6 +638,10 @@ class Rest {
         if (timer) {
           clearTimeout(timer)
           timer = null
+        }
+        if (onAbort && signal) {
+          signal.removeEventListener('abort', onAbort)
+          onAbort = null
         }
         if (req && !ok) req.close(http2.constants.NGHTTP2_CANCEL)
         ok ? resolve(val) : reject(val)
@@ -600,11 +663,8 @@ class Rest {
       this._resetH2Timer()
 
       req.once('response', (rh) => {
-        if (timer) {
-          clearTimeout(timer)
-          timer = null
-        }
-
+        // Kept running past the headers: unlike h1 there is no socket
+        // timeout here at all, so clearing it left the body unbounded.
         const status = rh[':status'] || 0
         const cl = rh['content-length']
         const contentType = rh['content-type'] || ''
@@ -658,10 +718,16 @@ class Rest {
       })
 
       timer = setTimeout(
-        () => finish(false, new Error(`Request timeout: ${this.timeout}ms`)),
-        this.timeout
+        () => finish(false, new Error(`Request timeout: ${deadline}ms`)),
+        deadline
       )
       unrefTimer(timer)
+
+      if (signal) {
+        onAbort = () => finish(false, abortError(signal.reason))
+        signal.addEventListener('abort', onAbort, { once: true })
+      }
+
       payload ? req.end(payload) : req.end()
     })
   }
@@ -688,38 +754,51 @@ class Rest {
     return this.makeRequest('GET', `${this._getSessionPath(gen)}/players`)
   }
 
-  async destroyPlayer(guildId, abortSignal) {
+  async destroyPlayer(guildId, options) {
     const gen = this._sessionGeneration
-    if (abortSignal?.aborted) return null
+    // Long-standing shape: a bare AbortSignal as the second argument.
+    const opts = options?.aborted !== undefined ? { signal: options } : options
+    if (opts?.signal?.aborted) return null
     return this.makeRequest(
       'DELETE',
-      `${this._getSessionPath(gen)}/players/${guildId}`
+      `${this._getSessionPath(gen)}/players/${guildId}`,
+      undefined,
+      opts
     )
   }
 
-  async loadTracks(identifier) {
+  async loadTracks(identifier, options) {
     return this.makeRequest(
       'GET',
-      `${this._endpoints.loadtracks}${encodeURIComponent(identifier)}`
+      `${this._endpoints.loadtracks}${encodeURIComponent(identifier)}`,
+      undefined,
+      options
     )
   }
 
-  async decodeTrack(encodedTrack) {
+  async decodeTrack(encodedTrack, options) {
     if (!_functions.isValidBase64(encodedTrack)) throw ERRORS.INVALID_TRACK
     return this.makeRequest(
       'GET',
-      `${this._endpoints.decodetrack}${encodeURIComponent(encodedTrack)}`
+      `${this._endpoints.decodetrack}${encodeURIComponent(encodedTrack)}`,
+      undefined,
+      options
     )
   }
 
-  async decodeTracks(encodedTracks) {
+  async decodeTracks(encodedTracks, options) {
     if (!Array.isArray(encodedTracks) || !encodedTracks.length)
       throw ERRORS.INVALID_TRACKS
     for (let i = 0; i < encodedTracks.length; i++) {
       if (!_functions.isValidBase64(encodedTracks[i]))
         throw ERRORS.INVALID_TRACKS
     }
-    return this.makeRequest('POST', this._endpoints.decodetracks, encodedTracks)
+    return this.makeRequest(
+      'POST',
+      this._endpoints.decodetracks,
+      encodedTracks,
+      options
+    )
   }
 
   async getStats() {
@@ -748,7 +827,7 @@ class Rest {
     return this.makeRequest('POST', this._endpoints.routeplanner.freeAll)
   }
 
-  async getLyrics({ track, skipTrackSource = false }) {
+  async getLyrics({ track, skipTrackSource = false, signal = null }) {
     const guildId = track?.guild_id ?? track?.guildId
     const encoded = track?.encoded
     const hasEncoded =
@@ -768,10 +847,16 @@ class Rest {
       try {
         const lyrics = await this.makeRequest(
           'GET',
-          `${this._apiBase}/loadlyrics?encodedTrack=${encodeURIComponent(encoded)}`
+          `${this._apiBase}/loadlyrics?encodedTrack=${encodeURIComponent(encoded)}`,
+          undefined,
+          { signal }
         )
         if (this._validLyrics(lyrics)) return lyrics
-      } catch {}
+      } catch (error) {
+        // Every leg is best effort, but an abort means the caller is gone:
+        // falling through would spend the remaining legs on nobody.
+        if (error?.name === 'AbortError') throw error
+      }
     }
 
     if (guildId) {
@@ -779,20 +864,32 @@ class Rest {
         const gen = this._sessionGeneration
         const lyrics = await this.makeRequest(
           'GET',
-          `${this._getSessionPath(gen)}/players/${guildId}/track/lyrics?skipTrackSource=${skip}`
+          `${this._getSessionPath(gen)}/players/${guildId}/track/lyrics?skipTrackSource=${skip}`,
+          undefined,
+          { signal }
         )
         if (this._validLyrics(lyrics)) return lyrics
-      } catch {}
+      } catch (error) {
+        // Every leg is best effort, but an abort means the caller is gone:
+        // falling through would spend the remaining legs on nobody.
+        if (error?.name === 'AbortError') throw error
+      }
     }
 
     if (hasEncoded) {
       try {
         const lyrics = await this.makeRequest(
           'GET',
-          `${this._endpoints.lyrics}?track=${encodeURIComponent(encoded)}&skipTrackSource=${skip}`
+          `${this._endpoints.lyrics}?track=${encodeURIComponent(encoded)}&skipTrackSource=${skip}`,
+          undefined,
+          { signal }
         )
         if (this._validLyrics(lyrics)) return lyrics
-      } catch {}
+      } catch (error) {
+        // Every leg is best effort, but an abort means the caller is gone:
+        // falling through would spend the remaining legs on nobody.
+        if (error?.name === 'AbortError') throw error
+      }
     }
 
     if (title) {
@@ -801,13 +898,29 @@ class Rest {
       try {
         const lyrics = await this.makeRequest(
           'GET',
-          `${this._endpoints.lyrics}/search?query=${encodeURIComponent(query)}`
+          `${this._endpoints.lyrics}/search?query=${encodeURIComponent(query)}`,
+          undefined,
+          { signal }
         )
         if (this._validLyrics(lyrics)) return lyrics
-      } catch {}
+      } catch (error) {
+        // Every leg is best effort, but an abort means the caller is gone:
+        // falling through would spend the remaining legs on nobody.
+        if (error?.name === 'AbortError') throw error
+      }
     }
 
     return null
+  }
+
+  async getLoadLyrics(encodedTrack, options) {
+    if (!_functions.isValidBase64(encodedTrack)) throw ERRORS.INVALID_TRACK
+    return this.makeRequest(
+      'GET',
+      `${this._apiBase}/loadlyrics?encodedTrack=${encodeURIComponent(encodedTrack)}`,
+      undefined,
+      options
+    )
   }
 
   _validLyrics(r) {
@@ -909,6 +1022,9 @@ class Rest {
   }
 
   destroy() {
+    // Anything still queued will never be sent, so reject it rather than
+    // leaving the callers hanging.
+    this._limiter?.clear(new Error('Rest destroyed'))
     const autoplayAgent = this._autoplayAgent
     const primaryAgent = this.agent
     if (this.agent) {

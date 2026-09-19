@@ -240,6 +240,8 @@ declare module 'aqualink' {
     // Additional Properties
     timeout: number
     restTimeout: number
+    restConcurrency?: number
+    restSearchConcurrency?: number
     maxPayload: number
     skipUTF8Validation: boolean
     _isConnecting: boolean
@@ -610,6 +612,8 @@ declare module 'aqualink' {
 
     // Additional Properties
     timeout: number
+    concurrency: number
+    searchConcurrency: number
     baseUrl: string
     defaultHeaders: Record<string, string>
     agent: unknown // HTTP/HTTPS Agent
@@ -631,7 +635,8 @@ declare module 'aqualink' {
     makeRequest<T = unknown>(
       method: HttpMethod,
       endpoint: string,
-      body?: unknown
+      body?: unknown,
+      options?: RestRequestOptions
     ): Promise<T>
 
     /**
@@ -644,7 +649,10 @@ declare module 'aqualink' {
      * Destroys a player via REST
      * @param guildId Guild ID
      */
-    destroyPlayer(guildId: string): Promise<unknown>
+    destroyPlayer(
+      guildId: string,
+      options?: RestRequestOptions | AbortSignal
+    ): Promise<unknown>
 
     /**
      * Gets lyrics for a track
@@ -673,8 +681,14 @@ declare module 'aqualink' {
     // Additional REST Methods
     getPlayer(guildId: string): Promise<unknown>
     getPlayers(): Promise<unknown>
-    decodeTrack(encodedTrack: string): Promise<unknown>
-    decodeTracks(encodedTracks: string[]): Promise<unknown>
+    decodeTrack(
+      encodedTrack: string,
+      options?: RestRequestOptions
+    ): Promise<unknown>
+    decodeTracks(
+      encodedTracks: string[],
+      options?: RestRequestOptions
+    ): Promise<unknown>
     getInfo(): Promise<NodeInfo>
     getVersion(): Promise<string>
     getRoutePlannerStatus(): Promise<unknown>
@@ -688,8 +702,14 @@ declare module 'aqualink' {
       volume: number
     ): Promise<unknown>
     removeMixer(guildId: string, mix: string): Promise<unknown>
-    getLoadLyrics(encodedTrack: string): Promise<LyricsResponse>
-    loadTracks(identifier: string): Promise<unknown>
+    getLoadLyrics(
+      encodedTrack: string,
+      options?: RestRequestOptions
+    ): Promise<LyricsResponse>
+    loadTracks(
+      identifier: string,
+      options?: RestRequestOptions
+    ): Promise<unknown>
     destroy(): void
   }
 
@@ -897,6 +917,10 @@ declare module 'aqualink' {
     trackResolveConcurrency?: number
     /** Per-request REST timeout, default 30000. Unrelated to the WS handshake timeout. */
     restTimeout?: number
+    /** Total concurrent REST requests per node, default 32. */
+    restConcurrency?: number
+    /** Of which searches, decodes and lyrics may hold at most this many, default 16. */
+    restSearchConcurrency?: number
     brokenPlayerStorePath?: string
   }
 
@@ -910,7 +934,7 @@ declare module 'aqualink' {
     maxFailoverAttempts?: number
   }
 
-  export interface NodeOptions extends NodeAgentOptions {
+  export interface NodeOptions extends NodeRestOptions, NodeAgentOptions {
     host: string
     name?: string
     port?: number | string
@@ -920,7 +944,13 @@ declare module 'aqualink' {
     secure?: boolean
     sessionId?: string
     regions?: DiscordVoiceRegion[]
+  }
+
+  /** Per-node overrides of the Aqua-wide REST limits. */
+  export interface NodeRestOptions {
     restTimeout?: number
+    restConcurrency?: number
+    restSearchConcurrency?: number
   }
 
   /**
@@ -941,7 +971,9 @@ declare module 'aqualink' {
     servername?: string
   }
 
-  export interface NodeAdditionalOptions extends NodeAgentOptions {
+  export interface NodeAdditionalOptions
+    extends NodeRestOptions,
+      NodeAgentOptions {
     resumeTimeout?: number
     autoResume?: boolean
     reconnectTimeout?: number
@@ -949,7 +981,6 @@ declare module 'aqualink' {
     infiniteReconnects?: boolean
     /** WS handshake timeout. REST uses restTimeout. */
     timeout?: number
-    restTimeout?: number
     maxPayload?: number
     skipUTF8Validation?: boolean
   }
@@ -974,11 +1005,22 @@ declare module 'aqualink' {
     region?: DiscordVoiceRegion
   }
 
+  export interface RestRequestOptions {
+    signal?: AbortSignal | null
+    /** Overrides the node's restTimeout for this call. */
+    timeout?: number
+    /** Lane override. Inferred from the endpoint when omitted. */
+    priority?: 'high' | 'low'
+  }
+
   export interface ResolveOptions {
     query: string
     source?: SearchSource | string
     requester: unknown
     nodes?: string | Node | Node[]
+    /** Aborting rejects with an AbortError rather than a resolve failure. */
+    signal?: AbortSignal | null
+    timeout?: number
   }
 
   // Response and Data Interfaces
@@ -1205,6 +1247,7 @@ declare module 'aqualink' {
 
   // Utility Interfaces
   export interface LyricsOptions {
+    signal?: AbortSignal | null
     query?: string
     useCurrentTrack?: boolean
     skipTrackSource?: boolean
@@ -1237,6 +1280,7 @@ declare module 'aqualink' {
   }
 
   export interface GetLyricsOptions {
+    signal?: AbortSignal | null
     track: {
       info: TrackInfo
       encoded?: string
