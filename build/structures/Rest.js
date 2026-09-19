@@ -131,7 +131,11 @@ class Rest {
     this.node = node
     this.sessionId = node.sessionId
     this._sessionGeneration = 0
-    this.timeout = node.timeout || 30000
+    // node.timeout is the WS handshake timeout and was assigned after this
+    // constructor ran, so this silently read undefined and every REST call
+    // used the 30000 fallback whatever was configured. REST has its own
+    // option now, and the node sets it before constructing Rest.
+    this.timeout = node.restTimeout || 30000
 
     const protocol = node.ssl ? 'https:' : 'http:'
     const host =
@@ -219,12 +223,22 @@ class Rest {
       })
     }
 
-    const origCreate = this.agent.createConnection.bind(this.agent)
-    this.agent.createConnection = (options, cb) => {
-      const socket = origCreate(options, cb)
-      socket.setNoDelay(true)
-      socket.setKeepAlive(true, 500)
-      return socket
+    // Bun's https.Agent has no createConnection, so binding it threw a
+    // TypeError out of the Rest constructor for every ssl node and the
+    // failure surfaced as a bare "No nodes connected".
+    //
+    // None of the agent tuning above does anything on Bun either: it never
+    // calls Agent.createConnection, and keepAlive, maxSockets, maxFreeSockets
+    // and scheduling are all ignored, so one socket is opened per concurrent
+    // request.
+    if (typeof this.agent.createConnection === 'function') {
+      const origCreate = this.agent.createConnection.bind(this.agent)
+      this.agent.createConnection = (options, cb) => {
+        const socket = origCreate(options, cb)
+        socket.setNoDelay(true)
+        socket.setKeepAlive(true, 500)
+        return socket
+      }
     }
   }
 

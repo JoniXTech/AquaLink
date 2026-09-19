@@ -239,6 +239,7 @@ declare module 'aqualink' {
 
     // Additional Properties
     timeout: number
+    restTimeout: number
     maxPayload: number
     skipUTF8Validation: boolean
     _isConnecting: boolean
@@ -894,6 +895,8 @@ declare module 'aqualink' {
     maxQueueSave?: number
     maxTracksRestore?: number
     trackResolveConcurrency?: number
+    /** Per-request REST timeout, default 30000. Unrelated to the WS handshake timeout. */
+    restTimeout?: number
     brokenPlayerStorePath?: string
   }
 
@@ -907,23 +910,46 @@ declare module 'aqualink' {
     maxFailoverAttempts?: number
   }
 
-  export interface NodeOptions {
+  export interface NodeOptions extends NodeAgentOptions {
     host: string
     name?: string
     port?: number | string
     auth?: string
+    password?: string
     ssl?: boolean
+    secure?: boolean
     sessionId?: string
     regions?: DiscordVoiceRegion[]
+    restTimeout?: number
   }
 
-  export interface NodeAdditionalOptions {
+  /**
+   * Socket and TLS tuning for the node's REST agent. The socket knobs are
+   * inert on Bun, which never calls Agent.createConnection.
+   */
+  export interface NodeAgentOptions {
+    maxSockets?: number
+    maxFreeSockets?: number
+    freeSocketTimeout?: number
+    keepAliveMsecs?: number
+    maxCachedSessions?: number
+    rejectUnauthorized?: boolean
+    ca?: string | Buffer | Array<string | Buffer>
+    cert?: string | Buffer | Array<string | Buffer>
+    key?: string | Buffer | Array<string | Buffer>
+    passphrase?: string
+    servername?: string
+  }
+
+  export interface NodeAdditionalOptions extends NodeAgentOptions {
     resumeTimeout?: number
     autoResume?: boolean
     reconnectTimeout?: number
     reconnectTries?: number
     infiniteReconnects?: boolean
+    /** WS handshake timeout. REST uses restTimeout. */
     timeout?: number
+    restTimeout?: number
     maxPayload?: number
     skipUTF8Validation?: boolean
   }

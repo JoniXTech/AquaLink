@@ -61,6 +61,7 @@ const DEFAULT_OPTIONS = Object.freeze({
   persistTracks: 'uri',
   maxTracksRestore: 20,
   trackResolveConcurrency: 4,
+  restTimeout: 30000,
   brokenPlayerStorePath: null
 })
 
