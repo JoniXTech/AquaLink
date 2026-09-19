@@ -32,6 +32,7 @@ class Track {
     this.node = node || data.node || null
     this.nodes = data.nodes || null
     this.requester = requester || null
+    this.disposed = false
     this._infoCache = null
     this._artworkCache = undefined
   }
@@ -146,6 +147,8 @@ class Track {
   }
 
   dispose() {
+    if (this.disposed) return
+    this.disposed = true
     this._infoCache =
       this.requester =
       this.node =
