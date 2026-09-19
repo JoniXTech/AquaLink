@@ -339,7 +339,33 @@ class AquaRecovery {
     return this.aqua._chooseLeastBusyNode(candidates)
   }
 
-  async movePlayerToNode(guildId, targetNode, reason = 'region') {
+  async rebuildPlayer(guildId, options = {}) {
+    const id = String(guildId)
+    const player = this.aqua.players.get(id)
+    if (!player || player.destroyed) throw new Error(`Player not found: ${id}`)
+
+    const requested =
+      typeof options.node === 'string'
+        ? this.aqua.nodeMap.get(options.node)
+        : options.node
+    // A rebuild is a repair, and the usual fault is the node's session going
+    // away underneath the player. Rebuilding onto an unusable node would
+    // reproduce it, so fall back to the best one available.
+    const target = requested?.isUsable
+      ? requested
+      : player.nodes?.isUsable
+        ? player.nodes
+        : this.aqua.leastUsedNodes[0]
+    if (!target?.isUsable)
+      throw new Error(`No usable node to rebuild guild ${id}`)
+
+    return this.movePlayerToNode(id, target, options.reason || 'rebuild', {
+      force: true,
+      destroyRemote: options.destroyRemote !== false
+    })
+  }
+
+  async movePlayerToNode(guildId, targetNode, reason = 'region', options = {}) {
     const id = String(guildId)
     return this.withGuildLifecycleLock(id, `move:${reason}`, async () => {
       const player = this.aqua.players.get(id)
@@ -347,7 +373,13 @@ class AquaRecovery {
         throw new Error(`Player not found: ${id}`)
       if (!targetNode?.isUsable)
         throw new Error('Target node is not connected')
-      if (player.nodes === targetNode || player.nodes?.name === targetNode.name)
+      // Without `force` a same-node move is a no-op, because the only
+      // strategy here is destroy-and-recreate and that would churn a healthy
+      // player for nothing. `force` is what makes it a rebuild in place.
+      if (
+        !options.force &&
+        (player.nodes === targetNode || player.nodes?.name === targetNode.name)
+      )
         return player
 
       const state = this.capturePlayerState(player)
@@ -365,6 +397,16 @@ class AquaRecovery {
             channelId: oldConn.channelId || null
           }
         : null
+
+      // Best effort: the session being gone is the fault a rebuild repairs,
+      // so a failure here must not abandon it.
+      if (options.destroyRemote && oldNode?.isUsable) {
+        await oldNode.rest?.destroyPlayer?.(id)?.catch?.((error) =>
+          reportSuppressedError(this.aqua, 'player.rebuild.destroyRemote', error, {
+            guildId: id
+          })
+        )
+      }
 
       oldPlayer.destroy({
         preserveClient: true,
