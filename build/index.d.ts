@@ -1432,14 +1432,83 @@ declare module 'aqualink' {
     skipTrackSource?: boolean
   }
 
-  export interface LyricsResponse {
+  /**
+   * The track NodeLink matched for a query lookup. Present only on query
+   * lookups, never on an encodedTrack request, so always guard it.
+   * `encoded` round-trips into /v4/loadlyrics?encodedTrack=, so it can be
+   * played or used to subscribe to live lyrics.
+   */
+  export interface LyricsTrack {
+    encoded: string
+    info: {
+      title: string
+      author: string
+      artworkUrl: string | null
+      uri: string
+      sourceName: string
+      length: number
+      isrc: string | null
+      identifier: string
+      isStream: boolean
+      isSeekable: boolean
+    }
+  }
+
+  /** NodeLink: one lyric line. Note this is NOT the Lavalink plugin's
+   *  `{ line, timestamp }` — different location and different fields. */
+  export interface LyricsDataLine {
+    text: string
+    time: number
+    duration: number
+    /** Present when the provider supplies word-level timing. */
+    words?: Array<{ text: string; timestamp: number; duration: number }>
+  }
+
+  /** NodeLink: the lyrics payload. `{}` only when loadType is 'empty'. */
+  export interface LyricsData {
+    name?: string
+    synced?: boolean
+    lines?: LyricsDataLine[]
+    provider?: string
+    /** Set when loadType is 'error'. */
+    message?: string
+    severity?: string
+  }
+
+  /** The Lavalink lyrics-plugin shape. Lines are `{ line, timestamp }`. */
+  export interface LavalinkLyricsResponse {
     text?: string
     source?: string
     lines?: Array<{
       line: string
       timestamp?: number
     }>
+    loadType?: never
+    data?: never
+    track?: never
   }
+
+  /** The NodeLink shape. Lines live at `data.lines` as LyricsDataLine. */
+  export interface NodelinkLyricsResponse {
+    loadType: 'lyrics' | 'empty' | 'error'
+    data?: LyricsData
+    /** Only on a query lookup, never on an encodedTrack request. */
+    track?: LyricsTrack
+    text?: never
+    source?: never
+    lines?: never
+  }
+
+  /**
+   * A response comes from one server or the other, never both. Narrow on
+   * `loadType` before reading either side:
+   * ```ts
+   * const lines = res.loadType ? res.data?.lines : res.lines
+   * ```
+   */
+  export type LyricsResponse =
+    | LavalinkLyricsResponse
+    | NodelinkLyricsResponse
 
   export interface AutoplaySeed {
     trackId: string
