@@ -397,6 +397,10 @@ class PlayerLifecycle {
       previousTracks: player.previousTracks?.toArray?.() || [],
       filters: player.filters?.toJSON?.() || null,
       dataStore: player._dataStore ? Array.from(player._dataStore) : null,
+      fading: player.fading ? JSON.parse(JSON.stringify(player.fading)) : null,
+      crossfade: player.crossfade ? { ...player.crossfade } : null,
+      ducking: !!player.ducking,
+      loudnessNormalizer: !!player.loudnessNormalizer,
       autoplaySeed: player.autoplaySeed,
       nowPlayingMessage: player.nowPlayingMessage,
       voiceState: player.connection
@@ -489,6 +493,10 @@ class PlayerLifecycle {
         if (state.dataStore?.length && np.set) {
           for (const [key, value] of state.dataStore) np.set(key, value)
         }
+        if (state.fading) np.setFading?.(state.fading)
+        if (state.crossfade) np.setCrossfade?.(state.crossfade)
+        if (state.ducking) np.setDucking?.(true)
+        if (state.loudnessNormalizer) np.setLoudnessNormalizer?.(true)
         if (state.filters && np.filters?.applySnapshot) {
           np.filters
             .applySnapshot(state.filters)
