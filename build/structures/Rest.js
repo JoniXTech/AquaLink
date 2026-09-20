@@ -734,8 +734,8 @@ class Rest {
     return this.makeRequest('POST', this._endpoints.routeplanner.freeAll)
   }
 
-  async getLyrics({ track, skipTrackSource = false }) {
-    const guildId = track?.guild_id ?? track?.guildId
+  async getLyrics({ track, skipTrackSource = false, signal = null }) {
+    const guildId = track?.guildId
     const encoded = track?.encoded
     const hasEncoded =
       typeof encoded === 'string' &&
@@ -749,18 +749,25 @@ class Rest {
     }
 
     const skip = skipTrackSource ? 'true' : 'false'
+    const isNodelink = !!this.node.isNodelink
+
     // nl only suports encoded tracks
-    if (this.node.isNodelink && hasEncoded) {
+    if (isNodelink && hasEncoded) {
       try {
         const lyrics = await this.makeRequest(
           'GET',
           `${this._apiBase}/loadlyrics?encodedTrack=${encodeURIComponent(encoded)}`
         )
         if (this._validLyrics(lyrics)) return lyrics
-      } catch {}
+      } catch (error) {
+        this._debugLyrics('loadlyrics(encodedTrack)', error)
+      }
     }
 
-    if (guildId) {
+    // The next two are Lavalink lyrics-plugin routes. NodeLink implements
+    // neither, so on those nodes they only cost two 404s before the query
+    // lookup below, which it does implement.
+    if (!isNodelink && guildId) {
       try {
         const gen = this._sessionGeneration
         const lyrics = await this.makeRequest(
@@ -768,40 +775,72 @@ class Rest {
           `${this._getSessionPath(gen)}/players/${guildId}/track/lyrics?skipTrackSource=${skip}`
         )
         if (this._validLyrics(lyrics)) return lyrics
-      } catch {}
+      } catch (error) {
+        this._debugLyrics('players/:guildId/track/lyrics', error)
+      }
     }
 
-    if (hasEncoded) {
+    if (!isNodelink && hasEncoded) {
       try {
         const lyrics = await this.makeRequest(
           'GET',
           `${this._endpoints.lyrics}?track=${encodeURIComponent(encoded)}&skipTrackSource=${skip}`
         )
         if (this._validLyrics(lyrics)) return lyrics
-      } catch {}
+      } catch (error) {
+        this._debugLyrics('lyrics?track=', error)
+      }
     }
 
     if (title) {
-      const info = track.info || {}
-      const query = info.author ? `${title} ${info.author}` : title
-      try {
-        const lyrics = await this.makeRequest(
-          'GET',
-          `${this._endpoints.lyrics}/search?query=${encodeURIComponent(query)}`
-        )
-        if (this._validLyrics(lyrics)) return lyrics
-      } catch {}
+      const author = track.info?.author
+      const found = await this.searchLyrics(
+        author ? `${title} ${author}` : title,
+        { signal }
+      )
+      if (found) return found
     }
 
     return null
   }
 
+  _debugLyrics(step, error) {
+    this.node?._emitDebug?.(
+      () => `Lyrics lookup via ${step} failed: ${error?.message || error}`
+    )
+  }
+
+  /**
+   * Lyrics for a search string. The query is whatever the caller wants to
+   * search for; the node matches a track and answers with it.
+   */
+  async searchLyrics(query, options = null) {
+    const q = typeof query === 'string' ? query.trim() : ''
+    if (!q) return null
+    try {
+      const lyrics = await this.makeRequest(
+        'GET',
+        `${this._endpoints.lyrics}/search?query=${encodeURIComponent(q)}`,
+        undefined,
+        { signal: options?.signal }
+      )
+      return this._validLyrics(lyrics) ? lyrics : null
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error
+      this._debugLyrics('lyrics/search?query=', error)
+      return null
+    }
+  }
+
   _validLyrics(r) {
     if (!r) return false
     if (typeof r === 'string') return r.length > 0
-    if (typeof r === 'object')
-      return Array.isArray(r) ? r.length > 0 : Object.keys(r).length > 0
-    return false
+    if (typeof r !== 'object') return false
+    if (Array.isArray(r)) return r.length > 0
+    // NodeLink answers 200 with loadType empty/error when it found nothing;
+    // counting that as a hit would end the chain on a non-result
+    if (r.loadType === 'empty' || r.loadType === 'error') return false
+    return Object.keys(r).length > 0
   }
 
   async subscribeLiveLyrics(guildId, skipTrackSource = false) {

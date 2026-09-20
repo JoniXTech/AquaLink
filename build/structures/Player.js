@@ -1079,11 +1079,7 @@ class Player extends EventEmitter {
   async getLyrics(options = {}) {
     if (this.destroyed || !this.nodes?.rest) return null
     const { query, useCurrentTrack = true, skipTrackSource = false } = options
-    if (query)
-      return this.nodes.rest.getLyrics({
-        track: { info: { title: query } },
-        skipTrackSource
-      })
+    if (query) return this.nodes.rest.searchLyrics(query)
     if (useCurrentTrack && this.playing && this.current) {
       const info = this.current.info
       return this.nodes.rest.getLyrics({
@@ -1091,7 +1087,7 @@ class Player extends EventEmitter {
           info,
           encoded: this.current.track,
           identifier: info.identifier,
-          guild_id: this.guildId
+          guildId: this.guildId
         },
         skipTrackSource
       })
