@@ -29,6 +29,9 @@ declare module 'aqualink' {
     allowedDomains: string[]
     loadBalancer: LoadBalancerStrategy
     nodeResolver: NodeResolver | null
+    nodeHealth: Required<NodeHealthOptions>
+    /** Names of nodes selection should avoid while other nodes remain. */
+    excludedNodes: Set<string>
     send: (payload: Record<string, unknown>) => void
     autoRegionMigrate: boolean
     persistTracks: 'uri' | 'full'
@@ -59,6 +62,15 @@ declare module 'aqualink' {
     selectNode(reason?: NodeSelectReason, context?: NodeSelectContext): Node | null
     /** The balancer's score for a node. Lower is better. */
     scoreNode(node: Node, options?: { extraPlayers?: number }): number
+    getNodeHealth(node: Node): NodeHealth | null
+
+    excludeNode(node: Node | string): boolean
+    includeNode(node: Node | string): boolean
+    /** Moves every player off a node and, by default, excludes it. */
+    ejectNode(
+      node: Node | string,
+      options?: { exclude?: boolean; reason?: string }
+    ): Promise<EjectResult>
 
     // Core Methods
     /**
@@ -246,6 +258,9 @@ declare module 'aqualink' {
     /** `Date.now()` of the last stats frame, 0 if none has arrived. */
     statsUpdatedAt: number
     readonly score: number
+    readonly health: NodeHealth | null
+    /** Operator preference. Higher is less preferred; 0 is neutral. */
+    priority: number
     players: Set<Player>
     options: NodeOptions
 
@@ -892,6 +907,7 @@ declare module 'aqualink' {
     allowedDomains?: string[]
     loadBalancer?: LoadBalancerStrategy
     nodeResolver?: NodeResolver
+    nodeHealth?: NodeHealthOptions
     failoverOptions?: FailoverOptions
     useHttp2?: boolean
     autoRegionMigrate?: boolean
@@ -928,6 +944,7 @@ declare module 'aqualink' {
     ssl?: boolean
     sessionId?: string
     regions?: DiscordVoiceRegion[]
+    priority?: number
   }
 
   export interface NodeAdditionalOptions {
@@ -1448,6 +1465,43 @@ declare module 'aqualink' {
     candidates?: Node[] | null
     region?: string | null
     guildId?: string | null
+    /** Ignored if honouring it would leave nothing to choose from. */
+    exclude?: (Node | string)[] | null
+  }
+
+  export type NodeHealthStatus = 'healthy' | 'degraded' | 'critical' | 'unknown'
+
+  export interface NodeHealth {
+    status: NodeHealthStatus
+    score: number
+    /** 0-1 fraction of the whole machine, or null with no stats. */
+    cpuLoad: number | null
+    processLoad: number | null
+    memoryUsage: number | null
+    players: number
+    playingPlayers: number
+    ping: number
+    /** Milliseconds since the last stats frame, null if none has arrived. */
+    statsAge: number | null
+    reasons: string[]
+  }
+
+  /**
+   * Fractions, not percentages. A node over a max is dropped from selection
+   * while any other node remains; a warn only shows up in `reasons`.
+   */
+  export interface NodeHealthOptions {
+    maxCpuLoad?: number
+    maxMemoryUsage?: number
+    warnCpuLoad?: number
+    warnMemoryUsage?: number
+  }
+
+  export interface EjectResult {
+    node: string
+    total: number
+    moved: number
+    failed: number
   }
 
   export interface NodeResolverContext {

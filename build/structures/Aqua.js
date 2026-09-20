@@ -35,6 +35,17 @@ const MEMORY_PRESSURE_FROM = 0.9
 const REST_WEIGHT = 0.05
 // A node that has never sent stats is an unknown, not an idle one.
 const NO_STATS_PENALTY = 50
+// One point of priority costs about as much as ten players.
+const PRIORITY_WEIGHT = 10
+
+// Gates are what remove a node from selection; warns are informational.
+// frameStats is deliberately absent, for the reason given in scoreNode.
+const DEFAULT_NODE_HEALTH = Object.freeze({
+  maxCpuLoad: 0.9,
+  maxMemoryUsage: 0.95,
+  warnCpuLoad: 0.75,
+  warnMemoryUsage: 0.85
+})
 const NODE_TIMEOUT = 30000
 const MAX_CACHE_SIZE = 20
 const MAX_FAILOVER_QUEUE = 50
@@ -53,6 +64,7 @@ const DEFAULT_OPTIONS = Object.freeze({
   infiniteReconnects: true,
   loadBalancer: 'leastLoad',
   nodeResolver: null,
+  nodeHealth: null,
   useHttp2: false,
   debugTrace: false,
   traceMaxEntries: TRACE_BUFFER_SIZE,
@@ -151,6 +163,8 @@ class Aqua extends EventEmitter {
     this._loadBalancer = merged.loadBalancer
     this.nodeResolver =
       typeof merged.nodeResolver === 'function' ? merged.nodeResolver : null
+    this.nodeHealth = { ...DEFAULT_NODE_HEALTH, ...(merged.nodeHealth || {}) }
+    this.excludedNodes = new Set()
     this.autoRegionMigrate = merged.autoRegionMigrate
     this.useHttp2 = merged.useHttp2
     this.maxQueueSave = merged.maxQueueSave
@@ -505,13 +519,67 @@ class Aqua extends EventEmitter {
   }
 
   selectNode(reason = 'player', context = null) {
+    const base = context?.candidates || this._usableNodes()
     return this._resolveNodes({
       reason,
       want: 'one',
-      candidates: context?.candidates || this._usableNodes(),
+      candidates: this._applyExclusions(base, context?.exclude),
       region: context?.region || null,
       guildId: context?.guildId || null
     })
+  }
+
+  excludeNode(identifier) {
+    const id = typeof identifier === 'string' ? identifier : identifier?.name
+    if (!id) return false
+    this.excludedNodes.add(id)
+    this._invalidateCache()
+    return true
+  }
+
+  includeNode(identifier) {
+    const id = typeof identifier === 'string' ? identifier : identifier?.name
+    if (!id || !this.excludedNodes.delete(id)) return false
+    this._invalidateCache()
+    return true
+  }
+
+  async ejectNode(identifier, options = {}) {
+    const id = typeof identifier === 'string' ? identifier : identifier?.name
+    const node = this.nodeMap.get(id)
+    if (!node) throw new Error(`Node not found: ${id}`)
+
+    // Excluded first, so a player moved off it cannot be placed straight back
+    // by a selection running between two moves.
+    if (options.exclude !== false) this.excludeNode(id)
+
+    const players = Array.from(node.players || [])
+    const reason = options.reason || 'eject'
+    let moved = 0
+    let failed = 0
+
+    for (const player of players) {
+      const target = this.selectNode('failover', {
+        exclude: [id],
+        guildId: player.guildId
+      })
+      if (!target || target === node) {
+        failed++
+        continue
+      }
+      try {
+        await this.movePlayerToNode(player.guildId, target, reason)
+        moved++
+      } catch (error) {
+        failed++
+        reportSuppressedError(this, 'aqua.ejectNode', error, {
+          guildId: player.guildId,
+          node: id
+        })
+      }
+    }
+
+    return { node: id, total: players.length, moved, failed }
   }
 
   _usableNodes() {
@@ -519,10 +587,109 @@ class Aqua extends EventEmitter {
     for (const n of this.nodeMap.values()) {
       if (n.isUsable) usable.push(n)
     }
-    return usable
+    // Exclusions are applied here rather than only at selection, so a caller
+    // reading leastUsedNodes[0] cannot route around them.
+    return this._applyExclusions(usable, null)
+  }
+
+  /**
+   * Exclusions are a preference, not a guarantee: if honouring them would
+   * leave nothing to choose from, they are ignored rather than failing the
+   * call.
+   */
+  _applyExclusions(nodes, exclude) {
+    let filtered = nodes
+    if (!filtered.length) return filtered
+
+    if (this.excludedNodes.size) {
+      const kept = filtered.filter((n) => !this.excludedNodes.has(n.name))
+      if (kept.length) filtered = kept
+    }
+
+    if (exclude?.length) {
+      const set = new Set(exclude.map((e) => (typeof e === 'string' ? e : e?.name)))
+      const kept = filtered.filter((n) => !set.has(n.name))
+      if (kept.length) filtered = kept
+    }
+
+    return filtered
+  }
+
+  getNodeHealth(node) {
+    if (!node) return null
+    const limits = this.nodeHealth
+    const stats = node.stats
+    const reasons = []
+
+    if (!stats || !node.statsUpdatedAt) {
+      // Never reported. Deliberately not 'critical': a node that has only
+      // just connected has no stats yet, and gating it out would idle it
+      // until its first frame -- 30s on NodeLink.
+      return {
+        status: 'unknown',
+        score: this.scoreNode(node),
+        cpuLoad: null,
+        processLoad: null,
+        memoryUsage: null,
+        players: node.players?.size || 0,
+        playingPlayers: 0,
+        ping: 0,
+        statsAge: null,
+        reasons: ['no stats received yet']
+      }
+    }
+
+    const cpu = stats.cpu
+    const cpuLoad = _functions.clamp01(cpu?.systemLoad)
+    const processLoad = _functions.clamp01(cpu?.nodelinkLoad ?? cpu?.lavalinkLoad)
+    const reservable = stats.memory?.reservable || 0
+    const memoryUsage = reservable > 0 ? stats.memory.used / reservable : null
+
+    let status = 'healthy'
+    if (cpuLoad > limits.maxCpuLoad) {
+      status = 'critical'
+      reasons.push(`cpu ${(cpuLoad * 100).toFixed(0)}%`)
+    } else if (cpuLoad > limits.warnCpuLoad) {
+      status = 'degraded'
+      reasons.push(`cpu ${(cpuLoad * 100).toFixed(0)}%`)
+    }
+
+    if (memoryUsage !== null) {
+      if (memoryUsage > limits.maxMemoryUsage) {
+        status = 'critical'
+        reasons.push(`memory ${(memoryUsage * 100).toFixed(0)}%`)
+      } else if (memoryUsage > limits.warnMemoryUsage && status !== 'critical') {
+        status = 'degraded'
+        reasons.push(`memory ${(memoryUsage * 100).toFixed(0)}%`)
+      }
+    }
+
+    return {
+      status,
+      score: this.scoreNode(node),
+      cpuLoad,
+      processLoad,
+      memoryUsage,
+      players: stats.players || 0,
+      playingPlayers: stats.playingPlayers || 0,
+      ping: stats.ping || 0,
+      statsAge: Date.now() - node.statsUpdatedAt,
+      reasons
+    }
   }
 
   _resolveNodes(ctx) {
+    // Only when picking one. The ordered list still shows every usable node,
+    // with an unhealthy one sorted to the bottom by its score.
+    if (ctx.want === 'one' && ctx.candidates.length > 1) {
+      const healthy = ctx.candidates.filter(
+        (n) => this.getNodeHealth(n)?.status !== 'critical'
+      )
+      // All of them being unhealthy means the pool is in trouble, not that
+      // there is nothing to pick.
+      if (healthy.length) ctx = { ...ctx, candidates: healthy }
+    }
+
     if (this.nodeResolver) {
       const api = {
         score: (node) => this.scoreNode(node),
@@ -679,6 +846,10 @@ class Aqua extends EventEmitter {
       // track change, and its deficit is always equal to nulled, so they are
       // not comparable with Lavalink's per-minute window.
     }
+
+    // Operator preference, applied either way: a node with no stats should
+    // still be deprioritised if it was configured that way.
+    load += (Number(node.priority) || 0) * PRIORITY_WEIGHT
 
     if (!extraPlayers) {
       if (this._nodeLoadCache.size >= MAX_CACHE_SIZE) {
