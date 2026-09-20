@@ -649,7 +649,12 @@ declare module 'aqualink' {
      * Gets lyrics for a track
      * @param options Lyrics options
      */
-    getLyrics(options: GetLyricsOptions): Promise<LyricsResponse>
+    getLyrics(options: GetLyricsOptions): Promise<LyricsResponse | null>
+    /** Lyrics for a search string. Returns null for an empty query. */
+    searchLyrics(
+      query: string,
+      options?: { signal?: AbortSignal | null }
+    ): Promise<LyricsResponse | null>
 
     /**
      * Subscribes to live lyrics events
@@ -1267,12 +1272,16 @@ declare module 'aqualink' {
     }
   }
 
+  /** Lyrics for a track you already have. For a search string, use searchLyrics. */
   export interface GetLyricsOptions {
+    signal?: AbortSignal | null
     track: {
       info: TrackInfo
+      /** Enables the direct routes; without it the lookup searches by title. */
       encoded?: string
       identifier?: string
-      guild_id?: string
+      /** Enables the Lavalink player route. Not implemented by NodeLink. */
+      guildId?: string
     }
     skipTrackSource?: boolean
   }

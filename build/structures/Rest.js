@@ -734,8 +734,8 @@ class Rest {
     return this.makeRequest('POST', this._endpoints.routeplanner.freeAll)
   }
 
-  async getLyrics({ track, skipTrackSource = false }) {
-    const guildId = track?.guild_id ?? track?.guildId
+  async getLyrics({ track, skipTrackSource = false, signal = null }) {
+    const guildId = track?.guildId
     const encoded = track?.encoded
     const hasEncoded =
       typeof encoded === 'string' &&
@@ -793,17 +793,12 @@ class Rest {
     }
 
     if (title) {
-      const info = track.info || {}
-      const query = info.author ? `${title} ${info.author}` : title
-      try {
-        const lyrics = await this.makeRequest(
-          'GET',
-          `${this._endpoints.lyrics}/search?query=${encodeURIComponent(query)}`
-        )
-        if (this._validLyrics(lyrics)) return lyrics
-      } catch (error) {
-        this._debugLyrics('lyrics/search?query=', error)
-      }
+      const author = track.info?.author
+      const found = await this.searchLyrics(
+        author ? `${title} ${author}` : title,
+        { signal }
+      )
+      if (found) return found
     }
 
     return null
@@ -813,6 +808,28 @@ class Rest {
     this.node?._emitDebug?.(
       () => `Lyrics lookup via ${step} failed: ${error?.message || error}`
     )
+  }
+
+  /**
+   * Lyrics for a search string. The query is whatever the caller wants to
+   * search for; the node matches a track and answers with it.
+   */
+  async searchLyrics(query, options = null) {
+    const q = typeof query === 'string' ? query.trim() : ''
+    if (!q) return null
+    try {
+      const lyrics = await this.makeRequest(
+        'GET',
+        `${this._endpoints.lyrics}/search?query=${encodeURIComponent(q)}`,
+        undefined,
+        { signal: options?.signal }
+      )
+      return this._validLyrics(lyrics) ? lyrics : null
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error
+      this._debugLyrics('lyrics/search?query=', error)
+      return null
+    }
   }
 
   _validLyrics(r) {
