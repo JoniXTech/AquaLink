@@ -244,7 +244,8 @@ declare module 'aqualink' {
     _isConnecting: boolean
     _debugEnabled: boolean
     _headers: Record<string, string>
-    _boundHandlers: Record<string, ReturnType<typeof this._boundHandlers>>
+    /** Undefined once the node has been destroyed */
+    readonly _boundHandlers: NodeBoundHandlers | undefined
 
     // Methods
     connect(): Promise<void>
@@ -296,6 +297,10 @@ declare module 'aqualink' {
     position: number
     timestamp: number
     ping: number
+    /**
+     * Whatever message object your library returned; aqualink only ever reads
+     * `.id` and calls `.delete()` on it. Never set by aqualink itself.
+     */
     nowPlayingMessage: unknown
     isAutoplayEnabled: boolean
     isAutoplay: boolean
@@ -467,7 +472,7 @@ declare module 'aqualink' {
 
     // Data Methods
     set(key: string, value: unknown): void
-    get<T = unknown>(key: string): T
+    get<T = unknown>(key: string): T | undefined
     clearData(): Player
 
     // Utility Methods
@@ -555,6 +560,12 @@ declare module 'aqualink' {
     track: string | null
     playlist: PlaylistInfo | null
     userData: Record<string, unknown> | null
+    /**
+     * Whatever you passed as `requester` to `resolve`/`search`; aqualink never
+     * inspects it beyond `.id` and `.username`. A track restored from a saved
+     * snapshot comes back as `{ id, username }`, because `toJSON()` stores the
+     * compact `"id:username"` form and `parseRequester` rebuilds it.
+     */
     requester: unknown
     nodes: Node
     node: Node | null
@@ -693,8 +704,8 @@ declare module 'aqualink' {
     destroy(): void
   }
 
-  export class Queue extends Array<Track> {
-    constructor(...elements: Track[])
+  export class Queue {
+    constructor()
 
     // Properties
     readonly size: number
@@ -714,9 +725,6 @@ declare module 'aqualink' {
      */
     add(...tracks: Track[]): Queue
 
-    push(track: Track): number
-    unshift(track: Track): number
-    shift(): Track | undefined
     remove(track: Track): boolean
 
     /**
@@ -886,7 +894,7 @@ declare module 'aqualink' {
     autoRegionMigrate?: boolean
     debugTrace?: boolean
     traceMaxEntries?: number
-    traceSink?: (...args: unknown[]) => void
+    traceSink?: (entry: TraceEntry) => void
     /**
      * How `savePlayer` persists tracks.
      * - `'uri'` (default): only `track.uri`, re-resolved on restore
@@ -907,6 +915,15 @@ declare module 'aqualink' {
     resumePlayback?: boolean
     cooldownTime?: number
     maxFailoverAttempts?: number
+  }
+
+  /** The WebSocket listeners a Node binds once and reuses. */
+  export interface NodeBoundHandlers {
+    open: Node['_handleOpen']
+    error: Node['_handleError']
+    message: Node['_handleMessage']
+    close: Node['_handleClose']
+    connect: () => Promise<void>
   }
 
   export interface NodeOptions {
@@ -981,6 +998,16 @@ declare module 'aqualink' {
   }
 
   export type NodeCpuStats = LavalinkCpuStats | NodelinkCpuStats
+
+  /** One entry from `aqua.getTrace()`, also passed to `traceSink`. */
+  export interface TraceEntry {
+    /** Monotonically increasing within one Aqua instance */
+    seq: number
+    /** `Date.now()` when the entry was recorded */
+    at: number
+    event: string
+    data: unknown
+  }
 
   export interface NodeStats {
     players: number
