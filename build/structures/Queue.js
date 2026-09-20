@@ -18,6 +18,10 @@ class Queue {
   }
 
   add(...tracks) {
+    for (const track of tracks) {
+      if (track?.disposed)
+        throw new TypeError('Cannot add a disposed track to the queue')
+    }
     this._items.push(...tracks)
     return this
   }
@@ -31,9 +35,11 @@ class Queue {
     return true
   }
 
-  clear() {
-    for (let i = this._head; i < this._items.length; i++) {
-      if (this._items[i]?.dispose) this._items[i].dispose()
+  clear({ dispose = true } = {}) {
+    if (dispose) {
+      for (let i = this._head; i < this._items.length; i++) {
+        if (this._items[i]?.dispose) this._items[i].dispose()
+      }
     }
     this._items.length = 0
     this._head = 0
