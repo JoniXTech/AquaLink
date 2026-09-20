@@ -917,9 +917,17 @@ declare module 'aqualink' {
     trackResolveConcurrency?: number
     /** Per-request REST timeout, default 30000. Unrelated to the WS handshake timeout. */
     restTimeout?: number
-    /** Total concurrent REST requests per node, default 32. */
+    /**
+     * Total concurrent REST requests per node. Defaults to the node's
+     * maxSockets (128). Going above maxSockets queues the overflow inside the
+     * HTTP agent, which has no priority lanes, so raise both together.
+     */
     restConcurrency?: number
-    /** Of which searches, decodes and lyrics may hold at most this many, default 16. */
+    /**
+     * Of which searches, decodes and lyrics may hold at most this many.
+     * Defaults to half of maxSockets (64). Always kept below restConcurrency
+     * so a player call is never queued behind a search.
+     */
     restSearchConcurrency?: number
     brokenPlayerStorePath?: string
   }

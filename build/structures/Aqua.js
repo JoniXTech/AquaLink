@@ -62,8 +62,9 @@ const DEFAULT_OPTIONS = Object.freeze({
   maxTracksRestore: 20,
   trackResolveConcurrency: 4,
   restTimeout: 30000,
-  restConcurrency: 32,
-  restSearchConcurrency: 16,
+  // null = derive from the node's maxSockets (128 and 64 by default).
+  restConcurrency: null,
+  restSearchConcurrency: null,
   brokenPlayerStorePath: null
 })
 

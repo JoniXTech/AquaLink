@@ -57,6 +57,7 @@ const UTF8 = 'utf8'
 const JSON_CT = 'application/json'
 const HTTP2_THRESHOLD = 1024
 const MAX_HEADER_POOL = 10
+const DEFAULT_MAX_SOCKETS = 128
 const H2_TIMEOUT = 60000
 
 const ERRORS = Object.freeze({
@@ -190,15 +191,21 @@ class Rest {
     this._h2 = null
     this._h2Timer = null
     this.calls = 0
+    // Derived from maxSockets, because that is where the limiter stops being
+    // the binding constraint: above it the overflow queues inside the agent,
+    // which is FIFO and has no idea a player call outranks a search. Raising
+    // one without the other silently gives up the priority guarantee.
+    const maxSockets = Math.max(1, Number(node.maxSockets) || DEFAULT_MAX_SOCKETS)
     this.concurrency = Math.max(
       1,
-      Number(node.restConcurrency ?? aqua?.options?.restConcurrency) || 32
+      Number(node.restConcurrency ?? aqua?.options?.restConcurrency) ||
+        maxSockets
     )
     this.searchConcurrency = Math.max(
       1,
       Number(
         node.restSearchConcurrency ?? aqua?.options?.restSearchConcurrency
-      ) || 16
+      ) || Math.floor(maxSockets / 2)
     )
     this._limiter = new RestLimiter(this.concurrency, this.searchConcurrency)
     this.searchConcurrency = this._limiter.searchConcurrency
@@ -207,7 +214,7 @@ class Rest {
   _setupAgent(node) {
     const opts = {
       keepAlive: true,
-      maxSockets: node.maxSockets || 128,
+      maxSockets: node.maxSockets || DEFAULT_MAX_SOCKETS,
       maxFreeSockets: node.maxFreeSockets || 64,
       freeSocketTimeout: node.freeSocketTimeout || 15000,
       keepAliveMsecs: node.keepAliveMsecs || 500,
@@ -237,7 +244,7 @@ class Rest {
     } else {
       this._autoplayAgent = new HttpsAgent({
         keepAlive: true,
-        maxSockets: node.maxSockets || 128,
+        maxSockets: node.maxSockets || DEFAULT_MAX_SOCKETS,
         maxFreeSockets: node.maxFreeSockets || 64,
         freeSocketTimeout: node.freeSocketTimeout || 15000,
         keepAliveMsecs: node.keepAliveMsecs || 500,
@@ -246,14 +253,13 @@ class Rest {
       })
     }
 
-    // Bun's https.Agent has no createConnection, so binding it threw a
-    // TypeError out of the Rest constructor for every ssl node and the
-    // failure surfaced as a bare "No nodes connected".
-    //
-    // None of the agent tuning above does anything on Bun either: it never
-    // calls Agent.createConnection, and keepAlive, maxSockets, maxFreeSockets
-    // and scheduling are all ignored, so one socket is opened per concurrent
-    // request. The limiter is what bounds concurrency there, not the agent.
+    // Bun before 1.4 had no createConnection on https.Agent, so binding it
+    // threw a TypeError out of this constructor for every ssl node and the
+    // failure surfaced as a bare "No nodes connected". Bun 1.4.2 implements
+    // it and honours the agent config over both HTTP and TLS -- measured, 10
+    // concurrent requests through maxSockets:2 open 2 sockets on both Bun and
+    // Node -- so this guard is only for older Bun and for any runtime with a
+    // partial http shim.
     if (typeof this.agent.createConnection === 'function') {
       const origCreate = this.agent.createConnection.bind(this.agent)
       this.agent.createConnection = (options, cb) => {
