@@ -339,7 +339,7 @@ class AquaRecovery {
     return this.aqua._chooseLeastBusyNode(candidates)
   }
 
-  async rebuildPlayer(guildId, options = {}) {
+  async rebuildPlayerInPlace(guildId, options = {}) {
     const id = String(guildId)
     const player = this.aqua.players.get(id)
     if (!player || player.destroyed) throw new Error(`Player not found: ${id}`)

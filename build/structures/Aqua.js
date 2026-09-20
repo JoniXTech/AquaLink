@@ -767,7 +767,7 @@ class Aqua extends EventEmitter {
   }
 
   async rebuildPlayer(guildId, options = {}) {
-    return this._recovery.rebuildPlayer(guildId, options)
+    return this._recovery.rebuildPlayerInPlace(guildId, options)
   }
 
   _capturePlayerState(player) {
