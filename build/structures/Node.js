@@ -118,6 +118,8 @@ class Node {
     this.auth = connOptions.auth || connOptions.password || 'youshallnotpass'
     this.sessionId = connOptions.sessionId || null
     this.regions = connOptions.regions || []
+    // Operator preference. Higher is less preferred; 0 is neutral.
+    this.priority = Number(connOptions.priority ?? options.priority) || 0
     this.ssl = !!connOptions.ssl || !!connOptions.secure || false
     this.wsUrl = _functions.buildWsUrl(this.host, this.port, this.ssl)
 
@@ -195,6 +197,11 @@ class Node {
   /** The balancer's current score for this node. Lower is better. */
   get score() {
     return this.aqua?.scoreNode?.(this) ?? Number.POSITIVE_INFINITY
+  }
+
+  /** Status, the numbers behind it, and why it is not healthy. */
+  get health() {
+    return this.aqua?.getNodeHealth?.(this) ?? null
   }
 
   _clearSession() {
