@@ -394,6 +394,9 @@ class PlayerLifecycle {
       currentTrack: player.current,
       queue: player.queue?.toArray() || [],
       previousIdentifiers: Array.from(player.previousIdentifiers),
+      previousTracks: player.previousTracks?.toArray?.() || [],
+      filters: player.filters?.toJSON?.() || null,
+      dataStore: player._dataStore ? Array.from(player._dataStore) : null,
       autoplaySeed: player.autoplaySeed,
       nowPlayingMessage: player.nowPlayingMessage,
       voiceState: player.connection
@@ -481,6 +484,17 @@ class PlayerLifecycle {
         np.autoplaySeed = state.autoplaySeed
         np.previousIdentifiers = new Set(state.previousIdentifiers)
         np.nowPlayingMessage = state.nowPlayingMessage
+        for (const track of state.previousTracks || [])
+          np.previousTracks?.push(track)
+        if (state.dataStore?.length && np.set) {
+          for (const [key, value] of state.dataStore) np.set(key, value)
+        }
+        if (state.filters && np.filters?.applySnapshot) {
+          np.filters
+            .applySnapshot(state.filters)
+            .updateFilters()
+            .catch(() => {})
+        }
         if (state.voiceState && np.connection) {
           np.connection.sessionId =
             state.voiceState.sessionId || np.connection.sessionId
