@@ -32,7 +32,12 @@ const MAX_FAILOVER_QUEUE = 50
 const MAX_REBUILD_LOCKS = 100
 const WRITE_BUFFER_SIZE = 100
 const TRACE_BUFFER_SIZE = 3000
-const VOICE_STATE_QUEUE_INTERVAL = 900
+// 0 = send as soon as the queue is reached, which is what every other client
+// does. Discord's gateway limit is per shard and the host library already
+// enforces it (discord.js, Seyfert and friends all bucket their sends), so
+// pacing here is a second, cruder queue stacked on a correct one. Set it to a
+// positive number only for a library that does not queue its own sends.
+const DEFAULT_VOICE_STATE_INTERVAL = 0
 
 const DEFAULT_OPTIONS = Object.freeze({
   shouldDeleteMessage: false,
@@ -62,7 +67,7 @@ const DEFAULT_OPTIONS = Object.freeze({
   maxTracksRestore: 20,
   trackResolveConcurrency: 4,
   brokenPlayerStorePath: null,
-  voiceStateInterval: VOICE_STATE_QUEUE_INTERVAL
+  voiceStateInterval: DEFAULT_VOICE_STATE_INTERVAL
 })
 
 const _functions = {
@@ -146,13 +151,13 @@ class Aqua extends EventEmitter {
       1,
       Number(merged.trackResolveConcurrency) || 4
     )
-    // Pacing is global, not per guild, so N guilds leaving costs N intervals.
-    // 0 disables it.
+    // Pacing is global rather than per guild, so any positive value costs N
+    // intervals to move N guilds. See DEFAULT_VOICE_STATE_INTERVAL.
     this.voiceStateInterval =
       Number.isFinite(merged.voiceStateInterval) &&
       merged.voiceStateInterval >= 0
         ? merged.voiceStateInterval
-        : VOICE_STATE_QUEUE_INTERVAL
+        : DEFAULT_VOICE_STATE_INTERVAL
     this.brokenPlayerStorePath =
       typeof merged.brokenPlayerStorePath === 'string' &&
       merged.brokenPlayerStorePath.trim()

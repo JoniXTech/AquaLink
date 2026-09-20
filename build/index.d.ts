@@ -907,6 +907,12 @@ declare module 'aqualink' {
     maxQueueSave?: number
     maxTracksRestore?: number
     trackResolveConcurrency?: number
+    /**
+     * Milliseconds between queued voice-state packets. Defaults to 0, which
+     * sends them as soon as the queue is reached; the host library already
+     * rate-limits gateway sends per shard. Positive values pace globally, so
+     * N guilds leaving costs N intervals.
+     */
     voiceStateInterval?: number
     brokenPlayerStorePath?: string
   }
