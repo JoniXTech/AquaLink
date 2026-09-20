@@ -247,6 +247,7 @@ class Player extends EventEmitter {
     this.txId = 0
     this.isAutoplayEnabled = this.isAutoplay = false
     this.autoplaySeed = this.current = this.nowPlayingMessage = null
+    this.leaveSent = null
     this.position = this.timestamp = this.ping = 0
     this.deaf = options.deaf !== false
     this.mute = !!options.mute
@@ -855,7 +856,7 @@ class Player extends EventEmitter {
             })
           }
         } else {
-          this.send({ guild_id: this.guildId, channel_id: null })
+          this._queueLeave()
           this.aqua?.destroyPlayer?.(this.guildId)
           if (this.nodes?.isUsable)
             this.nodes.rest
@@ -1032,11 +1033,22 @@ class Player extends EventEmitter {
   }
 
   disconnect() {
-    if (this.destroyed || !this.connected) return this
+    // Gated on the voice channel, not on `connected`: that flag mirrors the
+    // node's last playerUpdate, so a player that joined but was never
+    // confirmed could not be disconnected and the bot stayed in the channel.
+    if (this.destroyed || !this.voiceChannel) return this
     this.connected = false
     this.voiceChannel = null
-    this.send({ guild_id: this.guildId, channel_id: null })
+    this._queueLeave()
     return this
+  }
+
+  _queueLeave() {
+    const queued = this.send({ guild_id: this.guildId, channel_id: null })
+    this.leaveSent = queued
+      ? this.aqua?.flushVoiceState?.(this.guildId) || Promise.resolve()
+      : Promise.resolve()
+    return this.leaveSent
   }
 
   shuffle() {

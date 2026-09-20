@@ -32,7 +32,12 @@ const MAX_FAILOVER_QUEUE = 50
 const MAX_REBUILD_LOCKS = 100
 const WRITE_BUFFER_SIZE = 100
 const TRACE_BUFFER_SIZE = 3000
-const VOICE_STATE_QUEUE_INTERVAL = 900
+// 0 = send as soon as the queue is reached, which is what every other client
+// does. Discord's gateway limit is per shard and the host library already
+// enforces it (discord.js, Seyfert and friends all bucket their sends), so
+// pacing here is a second, cruder queue stacked on a correct one. Set it to a
+// positive number only for a library that does not queue its own sends.
+const DEFAULT_VOICE_STATE_INTERVAL = 0
 
 const DEFAULT_OPTIONS = Object.freeze({
   shouldDeleteMessage: false,
@@ -61,7 +66,8 @@ const DEFAULT_OPTIONS = Object.freeze({
   persistTracks: 'uri',
   maxTracksRestore: 20,
   trackResolveConcurrency: 4,
-  brokenPlayerStorePath: null
+  brokenPlayerStorePath: null,
+  voiceStateInterval: DEFAULT_VOICE_STATE_INTERVAL
 })
 
 const _functions = {
@@ -115,6 +121,7 @@ class Aqua extends EventEmitter {
     this.players = new Map()
     this.clientId = null
     this.initiated = false
+    this.destroyed = false
     this.version = pkgVersion
 
     const merged = { ...DEFAULT_OPTIONS, ...options }
@@ -144,6 +151,13 @@ class Aqua extends EventEmitter {
       1,
       Number(merged.trackResolveConcurrency) || 4
     )
+    // Pacing is global rather than per guild, so any positive value costs N
+    // intervals to move N guilds. See DEFAULT_VOICE_STATE_INTERVAL.
+    this.voiceStateInterval =
+      Number.isFinite(merged.voiceStateInterval) &&
+      merged.voiceStateInterval >= 0
+        ? merged.voiceStateInterval
+        : DEFAULT_VOICE_STATE_INTERVAL
     this.brokenPlayerStorePath =
       typeof merged.brokenPlayerStorePath === 'string' &&
       merged.brokenPlayerStorePath.trim()
@@ -177,6 +191,8 @@ class Aqua extends EventEmitter {
     this._voiceStatePending = new Map()
     this._voiceStateFlushTimer = null
     this._lastVoiceStateSendAt = 0
+    this._voiceStateWaiters = new Map()
+    this._voiceStateDrainWaiters = []
     this._recovery = new AquaRecovery(this, {
       _functions,
       MAX_CONCURRENT_OPS,
@@ -259,7 +275,25 @@ class Aqua extends EventEmitter {
     const guildId = data?.guild_id ? String(data.guild_id) : null
     if (!guildId) return false
 
-    this._voiceStatePending.set(guildId, data)
+    const isLeave = data.channel_id === null || data.channel_id === undefined
+    let slot = this._voiceStatePending.get(guildId)
+    if (!slot) {
+      slot = { leave: null, join: null }
+      this._voiceStatePending.set(guildId, slot)
+    }
+
+    if (isLeave) {
+      // "join then leave" nets out to "not in the channel", and the join was
+      // never seen by Discord, so the leave replaces it.
+      slot.join = null
+      slot.leave = data
+    } else {
+      // A join must never replace a pending leave. The player that leave
+      // belongs to is already gone, and dropping it strands the bot in the
+      // channel; the two are sent one interval apart instead.
+      slot.join = data
+    }
+
     if (!this._voiceStateQueued.has(guildId)) {
       this._voiceStateQueued.add(guildId)
       this._voiceStateQueue.push(guildId)
@@ -268,6 +302,7 @@ class Aqua extends EventEmitter {
     if (this.debugTrace) {
       this._trace('voice.queue.enqueue', {
         guildId,
+        kind: isLeave ? 'leave' : 'join',
         size: this._voiceStateQueued.size
       })
     }
@@ -275,11 +310,30 @@ class Aqua extends EventEmitter {
     return true
   }
 
+  flushVoiceState(guildId = null) {
+    if (guildId != null) {
+      const id = String(guildId)
+      if (!this._voiceStatePending.has(id)) return Promise.resolve()
+      return new Promise((resolve) => {
+        const waiters = this._voiceStateWaiters.get(id)
+        if (waiters) waiters.push(resolve)
+        else this._voiceStateWaiters.set(id, [resolve])
+        this._scheduleVoiceStateFlush()
+      })
+    }
+
+    if (!this._voiceStateQueued.size) return Promise.resolve()
+    return new Promise((resolve) => {
+      this._voiceStateDrainWaiters.push(resolve)
+      this._scheduleVoiceStateFlush()
+    })
+  }
+
   getVoiceStateQueueDelay(guildId) {
     const target = guildId ? String(guildId) : ''
     if (!target || !this._voiceStateQueued.has(target)) return 0
 
-    let position = 0
+    let packets = 0
     const seen = new Set()
     for (
       let index = this._voiceStateQueueHead;
@@ -295,17 +349,26 @@ class Aqua extends EventEmitter {
         continue
       }
       seen.add(queuedGuildId)
-      position++
+      packets += this._voiceStatePacketCount(queuedGuildId)
       if (queuedGuildId === target) {
-        return position * VOICE_STATE_QUEUE_INTERVAL
+        return packets * this.voiceStateInterval
       }
     }
 
-    return this._voiceStateQueued.size * VOICE_STATE_QUEUE_INTERVAL
+    return this._voiceStateQueued.size * this.voiceStateInterval
+  }
+
+  _voiceStatePacketCount(guildId) {
+    const slot = this._voiceStatePending.get(guildId)
+    if (!slot) return 0
+    return (slot.leave ? 1 : 0) + (slot.join ? 1 : 0)
   }
 
   _scheduleVoiceStateFlush(delay = 0) {
-    if (this._voiceStateFlushTimer) return
+    if (this._voiceStateFlushTimer) {
+      this._applyVoiceStateTimerRef()
+      return
+    }
     this._voiceStateFlushTimer = setTimeout(
       () => {
         this._voiceStateFlushTimer = null
@@ -313,15 +376,54 @@ class Aqua extends EventEmitter {
       },
       Math.max(0, delay)
     )
-    this._voiceStateFlushTimer.unref?.()
+    this._applyVoiceStateTimerRef()
+  }
+
+  _applyVoiceStateTimerRef() {
+    const timer = this._voiceStateFlushTimer
+    if (!timer) return
+    // An idle queue must never hold the process open, but a caller awaiting
+    // flushVoiceState() must: otherwise a shutdown exits before its own
+    // leaves reach the gateway.
+    if (this._voiceStateDrainWaiters.length || this._voiceStateWaiters.size) {
+      timer.ref?.()
+    } else {
+      timer.unref?.()
+    }
+  }
+
+  _resolveVoiceStateWaiters(guildId) {
+    const waiters = this._voiceStateWaiters.get(guildId)
+    if (!waiters) return
+    this._voiceStateWaiters.delete(guildId)
+    for (const resolve of waiters) _functions.safeCall(resolve)
+  }
+
+  _resolveVoiceStateDrain() {
+    if (this._voiceStateDrainWaiters.length) {
+      const waiters = this._voiceStateDrainWaiters
+      this._voiceStateDrainWaiters = []
+      for (const resolve of waiters) _functions.safeCall(resolve)
+    }
+    // Nothing is queued any more, so a per-guild waiter can never be
+    // satisfied later. Settle them rather than leaving a caller hanging.
+    if (this._voiceStateWaiters.size) {
+      const pending = Array.from(this._voiceStateWaiters.values())
+      this._voiceStateWaiters.clear()
+      for (const waiters of pending) {
+        for (const resolve of waiters) _functions.safeCall(resolve)
+      }
+    }
   }
 
   _flushVoiceStateQueue() {
-    if (!this._voiceStateQueued.size) return
+    if (!this._voiceStateQueued.size) {
+      this._resolveVoiceStateDrain()
+      return
+    }
 
     const now = Date.now()
-    const waitFor =
-      VOICE_STATE_QUEUE_INTERVAL - (now - this._lastVoiceStateSendAt)
+    const waitFor = this.voiceStateInterval - (now - this._lastVoiceStateSendAt)
     if (waitFor > 0) {
       this._scheduleVoiceStateFlush(waitFor)
       return
@@ -349,22 +451,48 @@ class Aqua extends EventEmitter {
       this._voiceStateQueueHead = 0
     }
 
-    const data = guildId ? this._voiceStatePending.get(guildId) : null
-    if (guildId) this._voiceStatePending.delete(guildId)
+    const slot = guildId ? this._voiceStatePending.get(guildId) : null
+    let data = null
+    if (slot) {
+      if (slot.leave) {
+        data = slot.leave
+        slot.leave = null
+      } else if (slot.join) {
+        data = slot.join
+        slot.join = null
+      }
+    }
+
+    // A guild whose join is still waiting goes to the back of the queue, so
+    // the leave it follows is a full interval ahead of it.
+    const stillPending = !!(slot && (slot.leave || slot.join))
+    if (guildId) {
+      if (stillPending) {
+        this._voiceStateQueued.add(guildId)
+        this._voiceStateQueue.push(guildId)
+      } else {
+        this._voiceStatePending.delete(guildId)
+      }
+    }
 
     if (data) {
       this._lastVoiceStateSendAt = now
       if (this.debugTrace) {
         this._trace('voice.queue.send', {
           guildId,
+          channelId: data.channel_id ?? null,
           remaining: this._voiceStateQueued.size
         })
       }
       _functions.safeCall(() => this.send({ op: 4, d: data }))
     }
 
+    if (guildId && !stillPending) this._resolveVoiceStateWaiters(guildId)
+
     if (this._voiceStateQueued.size) {
-      this._scheduleVoiceStateFlush(VOICE_STATE_QUEUE_INTERVAL)
+      this._scheduleVoiceStateFlush(this.voiceStateInterval)
+    } else {
+      this._resolveVoiceStateDrain()
     }
   }
 
@@ -445,18 +573,16 @@ class Aqua extends EventEmitter {
       this._eventHandlers = null
     }
     this.removeAllListeners()
-    if (this._voiceStateFlushTimer) {
-      clearTimeout(this._voiceStateFlushTimer)
-      this._voiceStateFlushTimer = null
-    }
-    this._voiceStateQueue.length = 0
-    this._voiceStateQueueHead = 0
-    this._voiceStateQueued.clear()
-    this._voiceStatePending.clear()
+    this.destroyed = true
 
     for (const id of Array.from(this.nodeMap.keys())) this._destroyNode(id)
     for (const player of Array.from(this.players.values()))
       _functions.safeCall(() => player.destroy())
+
+    // The leaves those destroys just queued are the last thing this instance
+    // owes Discord, so the queue is drained rather than cleared. Clearing it
+    // first, as this used to, dropped every one of them.
+    this._scheduleVoiceStateFlush()
 
     this.players.clear()
     this._failoverState = Object.create(null)
@@ -636,8 +762,12 @@ class Aqua extends EventEmitter {
     return this._recovery.findBestNodeForRegion(region)
   }
 
-  async movePlayerToNode(guildId, targetNode, reason = 'region') {
-    return this._recovery.movePlayerToNode(guildId, targetNode, reason)
+  async movePlayerToNode(guildId, targetNode, reason = 'region', options = {}) {
+    return this._recovery.movePlayerToNode(guildId, targetNode, reason, options)
+  }
+
+  async rebuildPlayer(guildId, options = {}) {
+    return this._recovery.rebuildPlayerInPlace(guildId, options)
   }
 
   _capturePlayerState(player) {
