@@ -824,7 +824,15 @@ class AquaRecovery {
       player.position = remote.state?.position || 0
       player.timestamp = remote.state?.time || Date.now()
     }
-    player._beginAdoptGuard(plan.displaced || null)
+    // A stream still running on the node gets its TrackStart re-sent when
+    // the voice reconnects; see Player#_beginAdoptGuard.
+    const streaming =
+      (plan.outcome === 'continued' || plan.outcome === 'promoted') &&
+      !remote.paused
+    player._beginAdoptGuard(
+      plan.displaced || null,
+      streaming ? plan.current : null
+    )
     this._releaseHolds(gId, asked, player)
 
     if (plan.displaced) {

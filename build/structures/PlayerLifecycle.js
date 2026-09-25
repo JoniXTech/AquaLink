@@ -332,6 +332,20 @@ class PlayerLifecycle {
     }
 
     const code = payload?.code
+    // An adopted player's voice is moving to this process's gateway session,
+    // and that closes the old socket: a real 4006/4014, or NodeLink's own
+    // 4014 when the new voice PATCH replaces a live connection. A rejoin
+    // here would redo the handover, and the 4006 rebuild restarts the track.
+    if (player._adoptGuard && (code === 4006 || code === 4014)) {
+      if (player.aqua?.debugTrace) {
+        player.aqua._trace('player.socketClosed.ignored', {
+          guildId: player.guildId,
+          code,
+          reason: 'adopt_handover'
+        })
+      }
+      return
+    }
     if (code === 4014 || code === 4022) {
       return this.freshVoiceRejoin(code, payload)
     }

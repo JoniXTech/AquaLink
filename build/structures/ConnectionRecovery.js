@@ -74,7 +74,13 @@ class ConnectionRecovery {
       return false
 
     const player = conn._player
-    if (!player || player.destroyed || player._resuming || player._reconnecting)
+    if (
+      !player ||
+      player.destroyed ||
+      player._resuming ||
+      player._reconnecting ||
+      player._adoptGuard
+    )
       return false
 
     const currentNode = player.nodes
@@ -359,6 +365,9 @@ class ConnectionRecovery {
         })
       }
       await conn._rest.updatePlayer(payload)
+      // The adopted player's voice now points at this gateway session.
+      const guard = conn._player?._adoptGuard
+      if (guard && payload?.data?.voice?.sessionId) guard.sent = true
       if (conn._aqua?.debugTrace) {
         conn._aqua._trace('connection.update.ok', {
           guildId: conn._guildId

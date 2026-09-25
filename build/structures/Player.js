@@ -318,10 +318,14 @@ class Player extends EventEmitter {
 
   // A restore adopted the node's player, which is still streaming. Until
   // its voice has moved to this process's gateway session, parts of the
-  // normal recovery would treat that move as a failure.
-  _beginAdoptGuard(displaced = null) {
+  // normal recovery would treat that move as a failure. It ends once the
+  // voice PATCH is out and the node has reconnected: at the TrackStart that
+  // NodeLink re-sends for a stream that survived (it comes after
+  // PlayerConnected), or at PlayerConnected when no stream is running.
+  // `streaming` is the track the node is playing on the old connection.
+  _beginAdoptGuard(displaced = null, streaming = null) {
     this._endAdoptGuard()
-    const guard = { sent: false, displaced, timer: null }
+    const guard = { sent: false, streaming, displaced, timer: null }
     guard.timer = this._createTimer(() => {
       if (this._adoptGuard === guard) this._endAdoptGuard('timeout')
     }, ADOPT_GUARD_MS)
@@ -1181,11 +1185,21 @@ class Player extends EventEmitter {
     if (!this.current) this.current = startedTrack
     this.playing = true
     this.paused = false
+    // During an adopted player's voice handover, NodeLink re-sends
+    // TrackStart for a stream that survived the reconnect. That one is
+    // flagged resumed; the first start of a track is new, even here.
+    const guard = this._adoptGuard
+    let resumed = this._resuming
+    if (guard) {
+      resumed = Track.same(guard.streaming, payload.track || startedTrack)
+      if (!resumed && !guard.sent) guard.streaming = startedTrack
+    }
     this.aqua.emit(AqualinkEvents.TrackStart, this, startedTrack, {
       ...payload,
-      resumed: this._resuming
+      resumed
     })
     this._resuming = false
+    if (guard?.sent && resumed) this._endAdoptGuard('started')
   }
 
   async trackEnd(_player, track, payload) {
@@ -1277,6 +1291,8 @@ class Player extends EventEmitter {
     _functions.emitIfActive(this, AqualinkEvents.PlayerCreated, payload)
   }
   playerConnected(_p, _t, payload) {
+    const guard = this._adoptGuard
+    if (guard?.sent && !guard.streaming) this._endAdoptGuard('connected')
     _functions.emitIfActive(this, AqualinkEvents.PlayerConnected, payload)
   }
   playerDestroyed(_p, _t, payload) {
