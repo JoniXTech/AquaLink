@@ -139,6 +139,17 @@ class Track {
     return this
   }
 
+  // The same audio, whether each side is a Track or a node's track record:
+  // the encoded string first, then the source identifier, because the same
+  // song can come back from a node encoded differently.
+  static same(a, b) {
+    if (!a || !b) return false
+    const encoded = a.track || a.encoded
+    if (encoded && encoded === (b.track || b.encoded)) return true
+    const id = a.identifier || a.info?.identifier
+    return !!id && id === (b.identifier || b.info?.identifier)
+  }
+
   isValid() {
     return Boolean(
       (typeof this.track === 'string' && this.track) ||

@@ -7,6 +7,7 @@ const { attachPlayerLifecycleState } = require('./PlayerLifecycleState')
 const { reportSuppressedError } = require('./Reporting')
 const { spAutoPlay, scAutoPlay } = require('../handlers/autoplay')
 const Queue = require('./Queue')
+const Track = require('./Track')
 
 const PLAYER_STATE = Object.freeze({
   IDLE: 0,
@@ -53,6 +54,8 @@ const RETRY_BACKOFF_BASE = 1500
 const RETRY_BACKOFF_MAX = 5000
 const PREVIOUS_TRACKS_SIZE = 50
 const PREVIOUS_IDS_MAX = 20
+// Upper bound on an adopted player's voice handover; see _beginAdoptGuard.
+const ADOPT_GUARD_MS = 30000
 const AUTOPLAY_MAX = 3
 const BATCHER_POOL_SIZE = 2
 const INVALID_LOADS = new Set(['error', 'empty', 'LOAD_FAILED', 'NO_MATCHES'])
@@ -263,6 +266,9 @@ class Player extends EventEmitter {
     this.crossfade = null
     this.ducking = false
     this.loudnessNormalizer = false
+    // Set by a restore: whether it adopted the node's player, and how.
+    this.restored = null
+    this._adoptGuard = null
 
     this.volume = _functions.clamp(options.defaultVolume || 100)
     this.loop = this._parseLoop(options.loop)
@@ -357,12 +363,58 @@ class Player extends EventEmitter {
     return true
   }
 
+  // A restore adopted the node's player, which is still streaming. Until
+  // its voice has moved to this process's gateway session, parts of the
+  // normal recovery would treat that move as a failure. It ends once the
+  // voice PATCH is out and the node has reconnected: at the TrackStart that
+  // NodeLink re-sends for a stream that survived (it comes after
+  // PlayerConnected), or at PlayerConnected when no stream is running.
+  // `streaming` is the track the node is playing on the old connection.
+  _beginAdoptGuard(displaced = null, streaming = null) {
+    this._endAdoptGuard()
+    const guard = { sent: false, streaming, displaced, timer: null }
+    guard.timer = this._createTimer(() => {
+      if (this._adoptGuard === guard) this._endAdoptGuard('timeout')
+    }, ADOPT_GUARD_MS)
+    this._adoptGuard = guard
+    return guard
+  }
+
+  _endAdoptGuard(reason = null) {
+    const guard = this._adoptGuard
+    if (!guard) return false
+    this._adoptGuard = null
+    if (guard.timer) {
+      clearTimeout(guard.timer)
+      this._pendingTimers?.delete(guard.timer)
+    }
+    if (reason && this.aqua?.debugTrace) {
+      this.aqua._trace('player.adoptGuard.end', {
+        guildId: this.guildId,
+        reason
+      })
+    }
+    return true
+  }
+
   _handlePlayerUpdate(packet) {
     return this._lifecycleController.handlePlayerUpdate(packet)
   }
 
   async _handleEvent(payload) {
     if (this.destroyed || !payload?.type) return
+
+    // The end of a track a restore stopped because the snapshot did not know
+    // it. Nothing of this player's ended, so it must not advance or emit.
+    const guard = this._adoptGuard
+    if (
+      guard?.displaced &&
+      payload.type === 'TrackEndEvent' &&
+      Track.same(guard.displaced, payload.track)
+    ) {
+      guard.displaced = null
+      return
+    }
 
     // Adopt any pluginInfo the node attached at playback time.
     // e.g. actual stream source, spotify canvas, and anything added later.
@@ -1297,11 +1349,21 @@ class Player extends EventEmitter {
     if (!this.current) this.current = startedTrack
     this.playing = true
     this.paused = false
+    // During an adopted player's voice handover, NodeLink re-sends
+    // TrackStart for a stream that survived the reconnect. That one is
+    // flagged resumed; the first start of a track is new, even here.
+    const guard = this._adoptGuard
+    let resumed = this._resuming
+    if (guard) {
+      resumed = Track.same(guard.streaming, payload.track || startedTrack)
+      if (!resumed && !guard.sent) guard.streaming = startedTrack
+    }
     this.aqua.emit(AqualinkEvents.TrackStart, this, startedTrack, {
       ...payload,
-      resumed: this._resuming
+      resumed
     })
     this._resuming = false
+    if (guard?.sent && resumed) this._endAdoptGuard('started')
   }
 
   async trackEnd(_player, track, payload) {
@@ -1393,6 +1455,8 @@ class Player extends EventEmitter {
     _functions.emitIfActive(this, AqualinkEvents.PlayerCreated, payload)
   }
   playerConnected(_p, _t, payload) {
+    const guard = this._adoptGuard
+    if (guard?.sent && !guard.streaming) this._endAdoptGuard('connected')
     _functions.emitIfActive(this, AqualinkEvents.PlayerConnected, payload)
   }
   playerDestroyed(_p, _t, payload) {

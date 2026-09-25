@@ -260,6 +260,8 @@ declare module 'aqualink' {
     readonly isUsable: boolean
     info: NodeInfo | null
     isNodelink: boolean
+    /** Whether the last ready resumed the session instead of opening one. */
+    resumed: boolean
     ws: unknown | null // WebSocket
     reconnectAttempted: number
     reconnectTimeoutId: NodeJS.Timeout | null
@@ -351,6 +353,8 @@ declare module 'aqualink' {
     mute: boolean
     autoplayRetries: number
     reconnectionRetries: number
+    /** Set by a restore; null on a player created any other way. */
+    restored: RestoreInfo | null
     _resuming: boolean
     _reconnecting: boolean
     previousIdentifiers: Set<string>
@@ -604,6 +608,9 @@ declare module 'aqualink' {
 
   export class Track {
     constructor(data?: TrackData, requester?: unknown, node?: Node)
+
+    /** Same audio: encoded string, else source identifier. */
+    static same(a: TrackLike | null, b: TrackLike | null): boolean
 
     // Properties
     identifier: string
@@ -1735,6 +1742,30 @@ declare module 'aqualink' {
     error?: Error | unknown
   }
 
+  export type RestoreOutcome =
+    | 'fresh' // not adopted: the snapshot was replayed as before
+    | 'continued' // the node still plays the saved track; nothing sent
+    | 'promoted' // the node moved on to a queued track; nothing sent
+    | 'replayed' // the saved track ended and loops: restarted from 0
+    | 'advanced' // the saved track ended: the next one plays from 0
+    | 'ended' // it ended with nothing after it: the player idles
+    | 'idle' // nothing played when saved, nothing plays now
+
+  export interface RestoreInfo {
+    /** The player the node kept through the restart was taken over. */
+    adopted: boolean
+    outcome: RestoreOutcome
+    /** Name of the node the player was restored on. */
+    node: string | null
+    /** The saved track, when it finished while the process was away. */
+    endedTrack: Track | null
+  }
+
+  /** A Track, or a track record as a node sends it. */
+  export type TrackLike =
+    | Track
+    | { encoded?: string | null; info?: { identifier?: string } }
+
   export interface SavedPlayerData {
     g: string // guildId
     t: string // textChannel
@@ -1751,6 +1782,8 @@ declare module 'aqualink' {
     pa: boolean // paused
     pl: boolean // playing
     nw: string | null // nowPlayingMessage id
+    n?: string | null // node that held the player
+    loop?: number // loop mode, as Player.LOOP_MODES
   }
 
   export interface TrackResolutionOptions {
@@ -2009,6 +2042,7 @@ declare module 'aqualink' {
       newPlayer: Player,
       targetNode: Node
     ) => void
+    playerRestored: (player: Player, info: RestoreInfo) => void
     playerReconnected: (player: Player, data: Record<string, unknown>) => void
     trackStart: (player: Player, track: Track) => void
     trackEnd: (player: Player, track: Track, reason?: string) => void
@@ -2199,5 +2233,6 @@ declare module 'aqualink' {
     readonly PlayerDestroy: 'playerDestroy'
     readonly PlayersRebuilt: 'playersRebuilt'
     readonly PlayerMigrated: 'playerMigrated'
+    readonly PlayerRestored: 'playerRestored'
   }
 }
