@@ -143,6 +143,10 @@ class Node {
     this._isConnecting = false
     this._connectPromise = null
     this.isNodelink = false
+    // Whether the last ready resumed the session rather than opening a new
+    // one. Only a resumed session can still hold the players of a previous
+    // process, which is what restore checks before adopting one.
+    this.resumed = false
 
     this._wsIsBun = !!process.isBun
     this._bunCleanup = null
@@ -702,6 +706,7 @@ class Node {
     const sessionChanged = sessionInvalidated && oldSessionId !== sessionId
 
     this.sessionId = sessionId
+    this.resumed = !!payload.resumed
     if (this.aqua?.debugTrace) {
       this.aqua._trace('node.ready.packet', {
         node: this.name,

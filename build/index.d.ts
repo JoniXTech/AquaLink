@@ -229,6 +229,8 @@ declare module 'aqualink' {
     readonly isUsable: boolean
     info: NodeInfo | null
     isNodelink: boolean
+    /** Whether the last ready resumed the session instead of opening one. */
+    resumed: boolean
     ws: unknown | null // WebSocket
     reconnectAttempted: number
     reconnectTimeoutId: NodeJS.Timeout | null
