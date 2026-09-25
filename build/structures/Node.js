@@ -147,6 +147,9 @@ class Node {
     // one. Only a resumed session can still hold the players of a previous
     // process, which is what restore checks before adopting one.
     this.resumed = false
+    // guildId -> events that arrived while a restore was asking this node
+    // about that guild and no player existed yet (see AquaRecovery).
+    this._adoptHolds = new Map()
 
     this._wsIsBun = !!process.isBun
     this._bunCleanup = null
@@ -273,7 +276,11 @@ class Node {
 
   _emitToPlayer(eventName, payload) {
     const player = this._getPlayer(payload?.guildId)
-    if (!player?.emit) return
+    if (!player?.emit) {
+      if (eventName === 'event')
+        this._adoptHolds?.get(String(payload?.guildId))?.push(payload)
+      return
+    }
     try {
       player.emit(eventName, payload)
     } catch (err) {

@@ -4,6 +4,18 @@ const readline = require('node:readline')
 const { AqualinkEvents } = require('./AqualinkEvents')
 const { emitOperationalError, reportSuppressedError } = require('./Reporting')
 const Track = require('./Track')
+const { LOOP_MODES } = require('./Player')
+
+// What a restore still applies from a hold: the node ending the track the
+// adopted player now holds.
+const HELD_ENDINGS = new Set([
+  'TrackEndEvent',
+  'TrackExceptionEvent',
+  'TrackStuckEvent'
+])
+
+const httpStatus = (error) =>
+  error?.statusCode || error?.status || error?.response?.statusCode || null
 
 class AquaRecovery {
   constructor(aqua, deps) {
@@ -591,14 +603,32 @@ class AquaRecovery {
   async restorePlayer(p, preferredNode = null) {
     const gId = String(p.g)
     return this.withGuildLifecycleLock(gId, 'restore', async () => {
+      let asked = null
       try {
         const existing = this.aqua.players.get(gId)
         if (existing?.playing && !existing.destroyed) return true
         if (existing?.destroyed) this.aqua.players.delete(gId)
 
-        const targetNode = preferredNode?.isUsable
-          ? preferredNode
-          : this.aqua.leastUsedNodes[0]
+        // A resumed session can still be playing this guild for the process
+        // that saved it. That player is adopted, not replaced: replacing it
+        // restarts the saved track at the saved position, a rewind by however
+        // long the restart took. Only asked when nothing here holds the guild.
+        const found =
+          !existing || existing.destroyed
+            ? await this._findResumedPlayer(gId, p, preferredNode)
+            : null
+        asked = found?.asked || null
+        if (found && !found.failed) {
+          await this._adoptResumedPlayer(gId, p, found)
+          return true
+        }
+        this._releaseHolds(gId, asked, null)
+
+        const targetNode =
+          found?.node ||
+          (preferredNode?.isUsable
+            ? preferredNode
+            : this.aqua.leastUsedNodes[0])
         if (!targetNode?.isUsable) {
           throw new Error(`No connected node available to restore guild ${gId}`)
         }
@@ -617,36 +647,11 @@ class AquaRecovery {
             : existing
         player._resuming = !!p.resuming
         this._applyVoiceBootstrap(player, p.vs)
-        const requester = this._functions.parseRequester(p.r)
-        // Entries are either a uri (resolved over REST) or a full track
-        // record (hydrated locally). Only the former spends the budget.
-        let resolveBudget = this.aqua.maxTracksRestore
-        const pending = []
-        for (const entry of [p.u, ...(p.q || [])]) {
-          if (!entry) continue
-          if (typeof entry === 'object') {
-            const owner =
-              this._functions.parseRequester(entry.requester) || requester
-            pending.push(new Track(entry, owner, targetNode))
-            continue
-          }
-          if (resolveBudget <= 0) continue
-          resolveBudget--
-          pending.push(
-            this._resolveTrackWithLimit(() =>
-              this.aqua.resolve({ query: entry, requester }).catch(() => null)
-            )
-          )
-        }
-        const resolved = await Promise.all(pending)
-        const validTracks = resolved.flatMap((result) =>
-          result instanceof Track ? [result] : result?.tracks || []
-        )
+        const { all: validTracks } = await this._restoreTracks(p, targetNode)
         if (validTracks.length && player.queue?.add) {
           player.queue.add(...validTracks)
         }
-        if (typeof p.loop === 'number') player.loop = p.loop
-        if (p.sh !== undefined) player.shuffle = p.sh
+        this._applySavedModes(player, p)
         if (p.u && validTracks[0]) {
           if (p.vol != null) {
             if (typeof player.setVolume === 'function')
@@ -661,25 +666,12 @@ class AquaRecovery {
             userData: p.ud
           })
         }
-        if (p.nw && p.t) {
-          const channel = this.aqua.client.channels?.cache?.get?.(p.t)
-          if (channel?.messages?.fetch) {
-            player.nowPlayingMessage = await channel.messages
-              .fetch(p.nw)
-              .catch(() => null)
-          } else if (this.aqua.client.messages?.fetch) {
-            player.nowPlayingMessage = await this.aqua.client.messages
-              .fetch(p.nw, p.t)
-              .catch(() => null)
-          }
-          if (this.aqua.debugTrace) {
-            this.aqua._trace('player.nowPlaying.restore', {
-              guildId: gId,
-              messageId: p.nw,
-              restored: !!player.nowPlayingMessage
-            })
-          }
-        }
+        await this._restoreNowPlaying(player, p, gId)
+        this._finishRestore(player, {
+          adopted: false,
+          outcome: 'fresh',
+          node: targetNode
+        })
         return true
       } catch (error) {
         console.error(
@@ -687,8 +679,283 @@ class AquaRecovery {
           error
         )
         return false
+      } finally {
+        this._releaseHolds(gId, asked, null)
       }
     })
+  }
+
+  // Which resumed node still has this guild's player, and what it is doing.
+  // null: none can have it, restore fresh. { failed }: the named node could
+  // not say, restore fresh on it. Otherwise adopt; remote null means the node
+  // has no player left, which counts as the saved track having ended.
+  async _findResumedPlayer(gId, p, preferredNode) {
+    const resumed = (node) => !!node?.isUsable && node.resumed === true
+    const isNamed = !!(preferredNode || p.n)
+    // The node the snapshot was taken on is the only one that can hold the
+    // guild. A snapshot from before that was recorded names none, and then
+    // every resumed node is asked.
+    const named = preferredNode || this.aqua.nodeMap.get(String(p.n))
+    const asked = isNamed
+      ? resumed(named)
+        ? [named]
+        : []
+      : Array.from(this.aqua.nodeMap.values()).filter(resumed)
+    if (!asked.length) return null
+
+    // Held from before the GET until the answer has been applied, so an end
+    // the node reports in between is not dropped for want of a player.
+    for (const node of asked) node._adoptHolds?.set(gId, [])
+    const answers = await Promise.all(
+      asked.map((node) =>
+        node.rest.getPlayer(gId).then(
+          (remote) => ({ node, remote: remote || null, error: null }),
+          (error) => ({
+            node,
+            remote: null,
+            error: httpStatus(error) === 404 ? null : error
+          })
+        )
+      )
+    )
+    const holder = answers.find((answer) => answer.remote)
+    if (holder) return { node: holder.node, remote: holder.remote, asked }
+    if (isNamed) {
+      const [answer] = answers
+      if (answer.error) {
+        reportSuppressedError(
+          this.aqua,
+          'player.restore.getPlayer',
+          answer.error,
+          { guildId: gId, node: answer.node.name }
+        )
+        return { node: answer.node, remote: null, failed: true, asked }
+      }
+      return { node: answer.node, remote: null, asked }
+    }
+    this._releaseHolds(gId, asked, null)
+    return null
+  }
+
+  // What the adopted player should be, from what the node reports against
+  // what was saved. Pure: the caller applies it. `ended` is the saved track
+  // when it finished during the gap; `displaced` is a track the node plays
+  // that the snapshot knows nothing about, which has to be stopped.
+  _reconcileResumed(remote, current, queue, loop, savedPosition) {
+    const nodeTrack = remote?.track || null
+    const rest = queue.slice()
+    if (nodeTrack) {
+      const next = rest.findIndex((track) => Track.same(track, nodeTrack))
+      // The same song twice in a row: a position behind the saved one means
+      // the node has already moved on to the second copy.
+      const movedOn =
+        next === 0 && (remote.state?.position ?? 0) < (savedPosition || 0)
+      if (Track.same(current, nodeTrack) && !movedOn) {
+        return { outcome: 'continued', current, queue: rest, ended: null }
+      }
+      // Gapless or crossfade promoted the preloaded track during the gap.
+      // Usually the first queued one; a later one if the queue was
+      // reordered after the preload was sent.
+      if (next >= 0) {
+        const [promoted] = rest.splice(next, 1)
+        if (current && loop === LOOP_MODES.QUEUE) rest.push(current)
+        return {
+          outcome: 'promoted',
+          current: promoted,
+          queue: rest,
+          ended: current
+        }
+      }
+    }
+
+    // Nothing of ours is playing: the saved track ended during the gap.
+    // Advance the way trackEnd would have.
+    const displaced = nodeTrack
+    if (!current && !displaced)
+      return { outcome: 'idle', current: null, queue: rest, ended: null }
+    if (current && loop === LOOP_MODES.TRACK) {
+      return {
+        outcome: 'replayed',
+        current,
+        queue: rest,
+        ended: current,
+        displaced,
+        play: 'current'
+      }
+    }
+    if (current && loop === LOOP_MODES.QUEUE) rest.push(current)
+    return {
+      outcome: rest.length ? 'advanced' : 'ended',
+      current: null,
+      queue: rest,
+      ended: current,
+      displaced,
+      play: rest.length ? 'next' : null
+    }
+  }
+
+  async _adoptResumedPlayer(gId, p, { node, remote, asked }) {
+    const { current, queue } = await this._restoreTracks(p, node)
+    const loop = typeof p.loop === 'number' ? p.loop : LOOP_MODES.NONE
+    const plan = this._reconcileResumed(remote, current, queue, loop, p.p)
+
+    // No voice bootstrap from the snapshot: the node already has those
+    // credentials, and the gateway session they belong to has gone. The op 4
+    // createPlayer sends brings the ones that count, and the voice PATCH they
+    // trigger is the only thing an adopted player sends by itself.
+    const player = this.aqua.createPlayer(node, {
+      guildId: gId,
+      textChannel: p.t,
+      voiceChannel: p.v,
+      defaultVolume: p.vol || 65,
+      deaf: p.d ?? true,
+      mute: !!p.m,
+      resuming: true
+    })
+    const volume = remote ? remote.volume : p.vol
+    if (Number.isFinite(volume)) player.volume = volume
+    if (plan.queue.length) player.queue.add(...plan.queue)
+    this._applySavedModes(player, p)
+    if (plan.ended) player.previousTracks.push(plan.ended)
+    if (plan.outcome === 'continued' || plan.outcome === 'promoted') {
+      player.current = plan.current
+      player.playing = true
+      player.paused = !!remote.paused
+      player.position = remote.state?.position || 0
+      player.timestamp = remote.state?.time || Date.now()
+    }
+    player._beginAdoptGuard(plan.displaced || null)
+    this._releaseHolds(gId, asked, player)
+
+    if (plan.displaced) {
+      player
+        .batchUpdatePlayer({ track: { encoded: null } }, true)
+        .catch((error) =>
+          reportSuppressedError(this.aqua, 'player.restore.stop', error, {
+            guildId: gId
+          })
+        )
+    }
+    if (plan.play === 'current') await player.play(plan.current)
+    else if (plan.play === 'next') await player.play()
+
+    if (this.aqua.debugTrace) {
+      this.aqua._trace('player.restore.adopt', {
+        guildId: gId,
+        node: node.name,
+        outcome: plan.outcome,
+        nodeTrack: remote?.track?.info?.identifier || null,
+        displaced: !!plan.displaced
+      })
+    }
+    await this._restoreNowPlaying(player, p, gId)
+    this._finishRestore(player, {
+      adopted: true,
+      outcome: plan.outcome,
+      node,
+      endedTrack: plan.ended
+    })
+    return player
+  }
+
+  // The events a hold collected are either reflected in the node's answer
+  // or the end of the track the player now holds; only the latter is news.
+  // Replays of the gap itself arrive right after ready, long before a
+  // restore asks, and are dropped as they always were.
+  _releaseHolds(gId, nodes, player) {
+    if (!nodes) return
+    for (const node of nodes) {
+      const held = node._adoptHolds?.get(gId)
+      if (!held) continue
+      node._adoptHolds.delete(gId)
+      if (!player || player.nodes !== node) continue
+      for (const payload of held) {
+        if (
+          HELD_ENDINGS.has(payload?.type) &&
+          Track.same(player.current, payload.track)
+        )
+          player.emit('event', payload)
+      }
+    }
+  }
+
+  // Entries are either a uri (resolved over REST) or a full track record
+  // (hydrated locally). Only the former spends the budget. `all` is every
+  // track in saved order; `current` is the one `u` produced, if it did.
+  async _restoreTracks(p, node) {
+    const requester = this._functions.parseRequester(p.r)
+    let resolveBudget = this.aqua.maxTracksRestore
+    let hasCurrent = false
+    const pending = []
+    const entries = [p.u, ...(p.q || [])]
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i]
+      if (!entry) continue
+      if (typeof entry === 'object') {
+        const owner =
+          this._functions.parseRequester(entry.requester) || requester
+        if (i === 0) hasCurrent = true
+        pending.push(new Track(entry, owner, node))
+        continue
+      }
+      if (resolveBudget <= 0) continue
+      resolveBudget--
+      if (i === 0) hasCurrent = true
+      pending.push(
+        this._resolveTrackWithLimit(() =>
+          this.aqua.resolve({ query: entry, requester }).catch(() => null)
+        )
+      )
+    }
+    const resolved = await Promise.all(pending)
+    const groups = resolved.map((result) =>
+      result instanceof Track ? [result] : result?.tracks || []
+    )
+    const all = groups.flat()
+    const current = hasCurrent ? groups[0][0] || null : null
+    return { all, current, queue: current ? all.slice(1) : all }
+  }
+
+  _applySavedModes(player, p) {
+    if (typeof p.loop === 'number') player.loop = p.loop
+    if (p.sh !== undefined) player.shuffle = p.sh
+  }
+
+  async _restoreNowPlaying(player, p, gId) {
+    if (!p.nw || !p.t) return
+    const channel = this.aqua.client.channels?.cache?.get?.(p.t)
+    if (channel?.messages?.fetch) {
+      player.nowPlayingMessage = await channel.messages
+        .fetch(p.nw)
+        .catch(() => null)
+    } else if (this.aqua.client.messages?.fetch) {
+      player.nowPlayingMessage = await this.aqua.client.messages
+        .fetch(p.nw, p.t)
+        .catch(() => null)
+    }
+    if (this.aqua.debugTrace) {
+      this.aqua._trace('player.nowPlaying.restore', {
+        guildId: gId,
+        messageId: p.nw,
+        restored: !!player.nowPlayingMessage
+      })
+    }
+  }
+
+  // How a host tells an adopted player from a fresh one. There is no
+  // synthetic trackStart, trackEnd or queueEnd: a host that restores its
+  // own state after this resolves would handle them too early, so it reads
+  // the outcome instead, e.g. running its queue-end path for 'ended'.
+  _finishRestore(player, { adopted, outcome, node, endedTrack = null }) {
+    const info = {
+      adopted,
+      outcome,
+      node: node?.name || node?.host || null,
+      endedTrack
+    }
+    player.restored = info
+    this.aqua.emit(AqualinkEvents.PlayerRestored, player, info)
+    return info
   }
 
   async waitForFirstNode(timeout = this.NODE_TIMEOUT) {

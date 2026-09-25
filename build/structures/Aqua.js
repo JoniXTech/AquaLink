@@ -907,6 +907,9 @@ class Aqua extends EventEmitter {
     const full = this.persistTracks === 'full'
     return {
       g: player.guildId,
+      // the node that holds the player, which is where a restore looks for
+      // it if that node's session resumes
+      n: player.nodes?.name || player.nodes?.host || null,
       t: player.textChannel,
       v: player.voiceChannel,
       u: full
@@ -924,6 +927,7 @@ class Aqua extends EventEmitter {
       pa: player.paused,
       pl: player.playing,
       nw: player.nowPlayingMessage?.id || null,
+      loop: player.loop,
       resuming: true
     }
   }
