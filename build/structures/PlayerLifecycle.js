@@ -507,7 +507,7 @@ class PlayerLifecycle {
         for (const q of state.queue) if (q !== ct) np.queue.add(q)
 
         if (ct) {
-          await np.play()
+          await np.play(undefined, { oneShot: ct.oneShot })
           if (state.position > 5000)
             np._createTimer(
               () => !np.destroyed && np.seek(state.position),

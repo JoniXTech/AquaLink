@@ -172,7 +172,7 @@ class AquaRecovery {
         })
         if (current && player?.queue?.add) {
           player.queue.add(current)
-          await player.play()
+          await player.play(undefined, { oneShot: current.oneShot })
           this.seekAfterTrackStart(player, id, state.position, 50)
           if (state.paused) player.pause(true)
         }
@@ -504,7 +504,9 @@ class AquaRecovery {
       newPlayer.queue.add(...state.queue)
     if (state.current && this.aqua.failoverOptions.preservePosition) {
       if (this.aqua.failoverOptions.resumePlayback) {
-        ops.push(newPlayer.play(state.current))
+        ops.push(
+          newPlayer.play(state.current, { oneShot: state.current.oneShot })
+        )
         this.seekAfterTrackStart(
           newPlayer,
           newPlayer.guildId,
@@ -846,7 +848,9 @@ class AquaRecovery {
   _serializeBrokenPlayer(player, nodeId, brokenAt) {
     const state = this.capturePlayerState(player)
     if (!state) return null
-    const requester = player.requester || player.current?.requester
+    // A one-shot is not saved, as in _serializePlayer.
+    const current = state.current?.oneShot ? null : state.current
+    const requester = player.requester || current?.requester
     const connection = player.connection
     const full = this.aqua.persistTracks === 'full'
     return {
@@ -856,9 +860,9 @@ class AquaRecovery {
       g: state.guildId,
       t: state.textChannel,
       v: state.voiceChannel,
-      u: full ? (state.current?.toJSON() ?? null) : state.current?.uri || null,
-      ud: state.current?.userData || null,
-      p: state.position || 0,
+      u: full ? (current?.toJSON() ?? null) : current?.uri || null,
+      ud: current?.userData || null,
+      p: current ? state.position || 0 : 0,
       q: (state.queue || [])
         .slice(0, this.aqua.maxQueueSave)
         .map((track) => (full ? track?.toJSON() : track?.uri))
