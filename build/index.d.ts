@@ -1103,8 +1103,8 @@ declare module 'aqualink' {
   }
 
   /**
-   * Socket and TLS tuning for the node's REST agent. The socket knobs are
-   * inert on Bun, which never calls Agent.createConnection.
+   * Socket and TLS tuning for the node's REST agent. Bun honours the socket
+   * knobs like Node from 1.4.2, including Agent.createConnection.
    */
   export interface NodeAgentOptions {
     maxSockets?: number
