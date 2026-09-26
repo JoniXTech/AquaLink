@@ -1459,7 +1459,8 @@ declare module 'aqualink' {
       track: Track,
       payload: Record<string, unknown>
     ) => void
-    queueEnd: (player: Player) => void
+    /** `track` is the track the queue ended after */
+    queueEnd: (player: Player, track: Track | null) => void
     playerMove: (oldChannel: string, newChannel: string) => void
     playersRebuilt: (node: Node, count: number) => void
     reconnectionFailed: (player: Player, data: Record<string, unknown>) => void

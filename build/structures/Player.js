@@ -1154,12 +1154,14 @@ class Player extends EventEmitter {
       _functions.safeDel(this.nowPlayingMessage)
     if (!isReplaced) this.current = null
 
+    // Every ended track gets TrackEnd, the last one of a queue included, and
+    // QueueEnd names the track it came after.
     if (isFailure || isCleanup) {
+      this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
       if (!this.queue.size || isCleanup) {
         this.clearData({ preserveTracks: this._reconnecting || this._resuming })
-        this.aqua.emit(AqualinkEvents.QueueEnd, this)
+        this.aqua.emit(AqualinkEvents.QueueEnd, this, track)
       } else {
-        this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
         await this.play()
       }
       return
@@ -1176,11 +1178,10 @@ class Player extends EventEmitter {
       }
     }
 
+    this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
     if (this.queue.size) {
-      if (!isReplaced)
-        this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
       await this.play()
-    } else if (this.isAutoplayEnabled && !isReplaced) {
+    } else if (this.isAutoplayEnabled) {
       await this.autoplay()
     } else {
       this.playing = false
@@ -1188,7 +1189,7 @@ class Player extends EventEmitter {
         this.clearData({ preserveTracks: this._reconnecting || this._resuming })
         this.destroy()
       }
-      this.aqua.emit(AqualinkEvents.QueueEnd, this)
+      this.aqua.emit(AqualinkEvents.QueueEnd, this, track)
     }
   }
 
