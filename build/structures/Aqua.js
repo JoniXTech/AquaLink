@@ -30,6 +30,9 @@ const RECONNECT_DELAY = 400
 const CPU_WEIGHT = 100
 const PROCESS_CPU_WEIGHT = 25
 const PLAYER_WEIGHT = 0.75
+// A player exists here as soon as it is created, but on the node only once
+// its first PATCH lands, so the frame just before it may not count it yet.
+const PENDING_GRACE_MS = 5000
 const MEMORY_WEIGHT = 40
 const MEMORY_PRESSURE_FROM = 0.9
 const REST_WEIGHT = 0.05
@@ -184,6 +187,7 @@ class Aqua extends EventEmitter {
     this._rebuildLocks = new Set()
     this._selectionEpoch = 0
     this._nodeLoadCache = new Map()
+    this._playerJoinedAt = new WeakMap()
     this._eventHandlers = null
     this._loading = false
     this._voiceStateQueue = []
@@ -631,12 +635,11 @@ class Aqua extends EventEmitter {
     }
 
     const stats = node.stats
-    const local = node.players?.size || 0
     // Players created since the last stats frame are invisible to the node's
     // own counters, so every new player used to land on the same node.
-    const unreported = Math.max(0, local - (stats?.players || 0))
+    const pending = this._pendingPlayers(node)
     const players =
-      ((stats?.playingPlayers || 0) + unreported + extraPlayers) * PLAYER_WEIGHT
+      ((stats?.playingPlayers || 0) + pending + extraPlayers) * PLAYER_WEIGHT
 
     let load
     if (!stats || !node.statsUpdatedAt) {
@@ -687,6 +690,23 @@ class Aqua extends EventEmitter {
       this._nodeLoadCache.set(id, { load, epoch: this._selectionEpoch })
     }
     return load
+  }
+
+  /**
+   * This client's players on `node` that its last stats frame did not count.
+   * Not `players.size - stats.players`: NodeLink sums `players` over every
+   * session on the node, so with other clients on it that is always 0.
+   */
+  _pendingPlayers(node) {
+    const players = node.players
+    if (!players?.size) return 0
+    if (!node.statsUpdatedAt) return players.size
+    const since = node.statsUpdatedAt - PENDING_GRACE_MS
+    let pending = 0
+    for (const player of players) {
+      if ((this._playerJoinedAt.get(player) || 0) > since) pending++
+    }
+    return pending
   }
 
   _getNodeLoad(node) {
@@ -923,6 +943,7 @@ class Aqua extends EventEmitter {
       })
     }
     node?.players?.add?.(player)
+    this._playerJoinedAt.set(player, Date.now())
     this._invalidateCache()
     player.once('destroy', () => this._handlePlayerDestroy(player))
     player.connect(options)
