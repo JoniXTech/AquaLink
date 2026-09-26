@@ -11,6 +11,8 @@ const { emitOperationalError, reportSuppressedError } = require('./Reporting')
 const { version: pkgVersion } = require('../../package.json')
 
 const SEARCH_PREFIX = ':'
+// The URLs a node loads as they are. Everything else is searched.
+const URL_QUERY_RE = /^(?:https?|ftts):\/\//i
 const EMPTY_ARRAY = Object.freeze([])
 const EMPTY_TRACKS_RESPONSE = Object.freeze({
   loadType: 'empty',
@@ -103,16 +105,6 @@ const _functions = {
       t.unref?.()
     }),
   noop: () => {},
-  isUrl: (query) => {
-    if (typeof query !== 'string' || query.length <= 8) return false
-    const q = query.trimStart()
-    return (
-      q.startsWith('http://') || q.startsWith('https://') || q.includes(':')
-    )
-  },
-  formatQuery(query, source) {
-    return _functions.isUrl(query) ? query : `${source}${SEARCH_PREFIX}${query}`
-  },
   makeTrack: (t, requester, node) => new Track(t, requester, node),
   safeCall(fn) {
     try {
@@ -1262,14 +1254,31 @@ class Aqua extends EventEmitter {
     if (player?.nodes?.players?.has?.(player)) this._handlePlayerDestroy(player)
   }
 
-  async resolve({ query, source, requester, nodes, signal, timeout }) {
+  // Whether resolve sends the query as it is without raw: only a URL is.
+  // Static so a host can key a cache on it without an instance.
+  static isRawQuery(query) {
+    return typeof query === 'string' && URL_QUERY_RE.test(query.trim())
+  }
+
+  isRawQuery(query) {
+    return Aqua.isRawQuery(query)
+  }
+
+  // The identifier resolve sends without raw. Text is searched even when it
+  // has a colon: NodeLink would read "Queen:" in "Queen: Bohemian Rhapsody"
+  // as a source name and fail.
+  formatQuery(query, source) {
+    const q = typeof query === 'string' ? query.trim() : query
+    if (Aqua.isRawQuery(q)) return q
+    return `${source || this.defaultSearchPlatform}${SEARCH_PREFIX}${q}`
+  }
+
+  async resolve({ query, source, requester, nodes, signal, timeout, raw }) {
     if (!this.initiated) throw new Error('Aqua not initialized')
     const node = this._getRequestNode(nodes)
     if (!node) throw new Error('No nodes available')
-    const formatted = _functions.formatQuery(
-      query,
-      source || this.defaultSearchPlatform
-    )
+    // raw is for a complete identifier, like sprec:... or a file path.
+    const formatted = raw ? query : this.formatQuery(query, source)
     try {
       const response = await node.rest.loadTracks(formatted, {
         signal,

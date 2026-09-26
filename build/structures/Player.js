@@ -996,7 +996,8 @@ class Player extends EventEmitter {
       try {
         const resolved = await this.aqua.resolve({
           query: options.identifier,
-          requester: options.requester || this.current?.requester
+          requester: options.requester || this.current?.requester,
+          raw: true
         })
 
         if (resolved?.tracks?.[0]) {
