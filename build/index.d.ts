@@ -1422,6 +1422,8 @@ declare module 'aqualink' {
   export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
 
   export type LoadBalancerStrategy = 'leastLoad' | 'leastRest' | 'random'
+  /** Why a player moved; callers of movePlayerToNode pass their own. */
+  export type MigrationReason = 'failover' | 'region' | (string & {})
 
   export type EventHandler<T = unknown> = (...args: T[]) => void | Promise<void>
 
@@ -1447,7 +1449,8 @@ declare module 'aqualink' {
     playerMigrated: (
       oldPlayer: Player,
       newPlayer: Player,
-      targetNode: Node
+      targetNode: Node,
+      reason: MigrationReason
     ) => void
     playerReconnected: (player: Player, data: Record<string, unknown>) => void
     trackStart: (player: Player, track: Track) => void

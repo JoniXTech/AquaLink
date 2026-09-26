@@ -298,7 +298,8 @@ class AquaRecovery {
               AqualinkEvents.PlayerMigrated,
               player,
               newPlayer,
-              targetNode
+              targetNode,
+              'failover'
             )
             return newPlayer
           } catch (error) {
@@ -425,7 +426,8 @@ class AquaRecovery {
         AqualinkEvents.PlayerMigrated,
         oldPlayer,
         newPlayer,
-        targetNode
+        targetNode,
+        reason
       )
       return newPlayer
     })
