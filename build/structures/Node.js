@@ -138,7 +138,7 @@ class Node {
     // Rest reads these off the node. Nothing ever copied them here, so the
     // whole TLS block in Rest._setupAgent was unreachable and the socket
     // defaults were unconditional. Per node first, then the Aqua-wide value.
-    // The socket knobs are inert on Bun (see Rest._setupAgent).
+    // Bun honours them too from 1.4.2 (see Rest._setupAgent).
     for (const key of Node.AGENT_OPTIONS) {
       const value = connOptions[key] ?? options[key]
       if (value !== undefined) this[key] = value
