@@ -411,6 +411,8 @@ declare module 'aqualink' {
         startTime?: number
         noReplace?: boolean
         userData?: Record<string, unknown>
+        /** Play once: no history, loop, autoplay or save */
+        oneShot?: boolean
       }
     ): Promise<Player>
 
@@ -631,6 +633,8 @@ declare module 'aqualink' {
     track: string | null
     playlist: PlaylistInfo | null
     userData: Record<string, unknown> | null
+    /** Played with `play(track, { oneShot: true })` */
+    oneShot: boolean
     /**
      * Whatever you passed as `requester` to `resolve`/`search`; aqualink never
      * inspects it beyond `.id` and `.username`. A track restored from a saved
@@ -2060,7 +2064,8 @@ declare module 'aqualink' {
       track: Track,
       payload: Record<string, unknown>
     ) => void
-    queueEnd: (player: Player) => void
+    /** `track` is the track the queue ended after */
+    queueEnd: (player: Player, track: Track | null) => void
     playerMove: (oldChannel: string, newChannel: string) => void
     playersRebuilt: (node: Node, count: number) => void
     reconnectionFailed: (player: Player, data: Record<string, unknown>) => void
