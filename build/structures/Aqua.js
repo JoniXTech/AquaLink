@@ -903,17 +903,17 @@ class Aqua extends EventEmitter {
   }
 
   _serializePlayer(player) {
-    const requester = player.requester || player.current?.requester
+    // A one-shot is not saved, so a restart mid-clip does not replay it.
+    const current = player.current?.oneShot ? null : player.current
+    const requester = player.requester || current?.requester
     const full = this.persistTracks === 'full'
     return {
       g: player.guildId,
       t: player.textChannel,
       v: player.voiceChannel,
-      u: full
-        ? (player.current?.toJSON() ?? null)
-        : player.current?.uri || null,
-      ud: player.current?.userData || null,
-      p: player.position || 0,
+      u: full ? (current?.toJSON() ?? null) : current?.uri || null,
+      ud: current?.userData || null,
+      p: current ? player.position || 0 : 0,
       ts: player.timestamp || 0,
       q: player.queue
         .toArray()

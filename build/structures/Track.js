@@ -27,6 +27,8 @@ class Track {
     this.isrc = _h.str(info.isrc || pluginInfo.isrc) // ISRC support
 
     this.userData = data.userData || null
+    // set by player.play(track, { oneShot: true })
+    this.oneShot = false
 
     this.playlist = data.playlist || null
     this.node = node || data.node || null

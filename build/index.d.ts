@@ -351,6 +351,8 @@ declare module 'aqualink' {
         startTime?: number
         noReplace?: boolean
         userData?: Record<string, unknown>
+        /** Play once: no history, loop, autoplay or save */
+        oneShot?: boolean
       }
     ): Promise<Player>
 
@@ -555,6 +557,8 @@ declare module 'aqualink' {
     track: string | null
     playlist: PlaylistInfo | null
     userData: Record<string, unknown> | null
+    /** Played with `play(track, { oneShot: true })` */
+    oneShot: boolean
     requester: unknown
     nodes: Node
     node: Node | null

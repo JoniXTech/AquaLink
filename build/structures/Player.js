@@ -416,6 +416,9 @@ class Player extends EventEmitter {
       this.paused = !!options.paused
       this.position = options.startTime || 0
       if (options.userData) this.current.userData = options.userData
+      // A one-shot plays once and leaves no trace: no history, no loop, no
+      // autoplay after it, and it is not saved as the current track.
+      this.current.oneShot = !!options.oneShot
       if (this.aqua?.debugTrace) {
         this.aqua._trace('player.play', {
           guildId: this.guildId,
@@ -1147,8 +1150,9 @@ class Player extends EventEmitter {
     const isFailure = reason === 'loadFailed'
     const isCleanup = reason === 'cleanup'
     const isReplaced = reason === 'replaced'
+    const oneShot = !!track?.oneShot
 
-    if (track) this.previousTracks.push(track)
+    if (track && !oneShot) this.previousTracks.push(track)
     if (isReplaced) return
     if (this.shouldDeleteMessage && !this._reconnecting && !this._resuming)
       _functions.safeDel(this.nowPlayingMessage)
@@ -1159,7 +1163,12 @@ class Player extends EventEmitter {
     if (isFailure || isCleanup) {
       this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
       if (!this.queue.size || isCleanup) {
-        this.clearData({ preserveTracks: this._reconnecting || this._resuming })
+        // A failed one-shot must not wipe the history it stayed out of.
+        if (oneShot && !isCleanup) this.playing = false
+        else
+          this.clearData({
+            preserveTracks: this._reconnecting || this._resuming
+          })
         this.aqua.emit(AqualinkEvents.QueueEnd, this, track)
       } else {
         await this.play()
@@ -1167,7 +1176,7 @@ class Player extends EventEmitter {
       return
     }
 
-    if (track && reason === 'finished') {
+    if (track && reason === 'finished' && !oneShot) {
       if (this.loop === LOOP_MODES.TRACK) {
         this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
         await this.play(track)
@@ -1181,7 +1190,7 @@ class Player extends EventEmitter {
     this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
     if (this.queue.size) {
       await this.play()
-    } else if (this.isAutoplayEnabled) {
+    } else if (this.isAutoplayEnabled && !oneShot) {
       await this.autoplay()
     } else {
       this.playing = false
