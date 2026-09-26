@@ -99,6 +99,8 @@ class Track {
     if (!query) return null
 
     const payload = { query, source: platform, requester: this.requester }
+    // the uri is the track's own identifier, not something to search for
+    if (query === this.uri) payload.raw = true
     if (node) payload.nodes = node
 
     let result

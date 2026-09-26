@@ -106,6 +106,11 @@ declare module 'aqualink' {
      * ```
      */
     resolve(options: ResolveOptions): Promise<ResolveResponse>
+    /** Whether resolve sends the query as it is without `raw` (a URL) */
+    static isRawQuery(query: string): boolean
+    isRawQuery(query: string): boolean
+    /** The identifier resolve sends without `raw` */
+    formatQuery(query: string, source?: SearchSource | string): string
 
     /**
      * Gets an existing player
@@ -953,6 +958,8 @@ declare module 'aqualink' {
     source?: SearchSource | string
     requester: unknown
     nodes?: string | Node | Node[]
+    /** Send `query` as it is: a complete identifier, not text to search */
+    raw?: boolean
   }
 
   // Response and Data Interfaces

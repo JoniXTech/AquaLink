@@ -634,7 +634,9 @@ class AquaRecovery {
           resolveBudget--
           pending.push(
             this._resolveTrackWithLimit(() =>
-              this.aqua.resolve({ query: entry, requester }).catch(() => null)
+              this.aqua
+                .resolve({ query: entry, requester, raw: true })
+                .catch(() => null)
             )
           )
         }

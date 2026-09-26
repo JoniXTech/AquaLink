@@ -113,19 +113,21 @@ const spAutoPlay = async (seed, player, requester, excludedIds = []) => {
 
   let query
   if (isrc) {
-    query = `sprec:mix:isrc:${isrc}`
+    query = `mix:isrc:${isrc}`
   } else {
-    query = `sprec:seed_tracks=${trackId}`
+    query = `seed_tracks=${trackId}`
   }
 
   let res = await player.aqua.resolve({
     query,
+    source: 'sprec',
     requester
   })
 
   if (!res?.tracks?.length && isrc && trackId) {
     res = await player.aqua.resolve({
-      query: `sprec:seed_tracks=${trackId}`,
+      query: `seed_tracks=${trackId}`,
+      source: 'sprec',
       requester
     })
   }
