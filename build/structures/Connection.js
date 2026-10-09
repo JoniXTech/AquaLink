@@ -157,6 +157,7 @@ class Connection {
     this._voiceFlushTimer = null
     this._pendingUpdate = null
     this._lastSentVoiceKey = ''
+    this._voiceInFlightKey = ''
 
     this._nullChannelTimer = null
     this.isWaitingForDisconnect = false
@@ -551,15 +552,21 @@ class Connection {
     }
 
     const key = this._makeVoiceKey()
-    if (key === this._lastSentVoiceKey) {
+    // A repeat of what the node already has is dropped only while it reports
+    // voice connected, or while that same update is still on its way. After
+    // a close both servers take an unchanged PATCH as "reconnect", so then a
+    // repeat is a real request.
+    if (
+      key === this._lastSentVoiceKey &&
+      (this._player?.connected || this._voiceInFlightKey === key)
+    ) {
       sharedPool.release(pending.payload)
       return Promise.resolve(false)
     }
-    // Set before the send so a re-send of the same data while this one is in
-    // flight is dropped, and cleared if it fails: the key means "the node has
-    // this", and a failed send left it with nothing, so the next re-send has
-    // to go out.
+    // Cleared if the send fails: the key means "the node has this", and a
+    // failed send left it with nothing.
     this._lastSentVoiceKey = key
+    this._voiceInFlightKey = key
     const aqua = this._aqua
     const guildId = this._guildId
 
@@ -587,7 +594,10 @@ class Connection {
           return false
         }
       )
-      .finally(() => sharedPool.release(pending.payload))
+      .finally(() => {
+        if (this._voiceInFlightKey === key) this._voiceInFlightKey = ''
+        sharedPool.release(pending.payload)
+      })
   }
 
   async _recoverMissingPlayer(isSessionError) {

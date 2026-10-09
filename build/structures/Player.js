@@ -45,13 +45,9 @@ const VOICE_DOWN_THRESHOLD = 10000
 const VOICE_ABANDON_MULTIPLIER = 12
 const RECONNECT_MAX = 15
 const MUTE_TOGGLE_DELAY = 300
-const SEEK_DELAY = 800
-const PAUSE_DELAY = 1200
 const VOICE_TRACE_INTERVAL = 15000
 const PLAYER_UPDATE_SILENCE_THRESHOLD = 45000
 const VOICE_FORCE_DESTROY_MS = 15 * 60 * 1000
-const RETRY_BACKOFF_BASE = 1500
-const RETRY_BACKOFF_MAX = 5000
 const PREVIOUS_TRACKS_SIZE = 50
 const PREVIOUS_IDS_MAX = 20
 // Upper bound on an adopted player's voice handover; see _beginAdoptGuard.
@@ -259,8 +255,6 @@ class Player extends EventEmitter {
     attachPlayerLifecycleState(this, { resuming: !!options.resuming })
     this._voiceWatchdogTimer = null
     this._pendingTimers = new Set()
-    this._reconnectTimers = null
-    this._reconnectNonce = 0
     this._dataStore = null
     this.fading = null
     this.crossfade = null
@@ -292,11 +286,7 @@ class Player extends EventEmitter {
       VOICE_ABANDON_MULTIPLIER,
       VOICE_FORCE_DESTROY_MS,
       RECONNECT_MAX,
-      MUTE_TOGGLE_DELAY,
-      SEEK_DELAY,
-      PAUSE_DELAY,
-      RETRY_BACKOFF_BASE,
-      RETRY_BACKOFF_MAX
+      MUTE_TOGGLE_DELAY
     })
 
     this._voiceRequestAt = 0
@@ -789,7 +779,6 @@ class Player extends EventEmitter {
       abortSignal = null
     } = options
 
-    this._reconnectNonce++
     this.destroyed = true
     this._clearVoiceRecovery(undefined, 'destroyed')
     if (this.aqua?.debugTrace) {
@@ -809,11 +798,6 @@ class Player extends EventEmitter {
 
     _functions.clearTimers(this._pendingTimers)
     this._pendingTimers = null
-
-    if (this._reconnectTimers) {
-      _functions.clearTimers(this._reconnectTimers)
-      this._reconnectTimers = null
-    }
 
     this.connected = this.playing = this.paused = this.isAutoplay = false
     this._deferredStart = false

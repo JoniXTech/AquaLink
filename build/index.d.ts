@@ -942,6 +942,7 @@ declare module 'aqualink' {
     _hasDebugListeners: boolean
     _hasMoveListeners: boolean
     _lastSentVoiceKey: string
+    _voiceInFlightKey: string
     _lastVoiceDataUpdate: number
     _voiceChangedAt: number
     _stateFlags: number

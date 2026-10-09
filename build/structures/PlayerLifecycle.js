@@ -24,10 +24,6 @@ class PlayerLifecycle {
     this.VOICE_FORCE_DESTROY_MS = deps.VOICE_FORCE_DESTROY_MS
     this.RECONNECT_MAX = deps.RECONNECT_MAX
     this.MUTE_TOGGLE_DELAY = deps.MUTE_TOGGLE_DELAY
-    this.SEEK_DELAY = deps.SEEK_DELAY
-    this.PAUSE_DELAY = deps.PAUSE_DELAY
-    this.RETRY_BACKOFF_BASE = deps.RETRY_BACKOFF_BASE
-    this.RETRY_BACKOFF_MAX = deps.RETRY_BACKOFF_MAX
 
     this._deadlineTimer = null
     this._deadlineSeq = 0
