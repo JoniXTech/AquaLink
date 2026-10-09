@@ -2,6 +2,7 @@ const { AqualinkEvents } = require('./AqualinkEvents')
 const { reportSuppressedError } = require('./Reporting')
 
 const FRESH_REJOIN_DELAYS = Object.freeze({
+  4006: 1000,
   4014: 3000,
   4022: 5000
 })
@@ -351,6 +352,9 @@ class PlayerLifecycle {
     }
 
     if (code === 4006 && player._resuming) {
+      if (!player.connection?._isTransient4006?.()) {
+        return this.freshVoiceRejoin(code, payload)
+      }
       if (player.aqua?.debugTrace) {
         player.aqua._trace('player.socketClosed.ignored', {
           guildId: player.guildId,

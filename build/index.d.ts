@@ -560,6 +560,7 @@ declare module 'aqualink' {
     _handleEvent(payload: Record<string, unknown>): Promise<void>
     _voiceWatchdog(): Promise<void>
     _attemptVoiceResume(): Promise<void>
+    _freshVoiceRejoin(code: number, payload?: Record<string, unknown> | null): Promise<void>
     _getAutoplayTrack(
       sourceName: string,
       identifier: string,
@@ -958,6 +959,8 @@ declare module 'aqualink' {
     _executeVoiceUpdate(): Promise<boolean>
     _sendUpdate(payload: Record<string, unknown>): Promise<void>
     _prepareFreshVoiceJoin(): boolean
+    _markGatewayVoice(): void
+    _isTransient4006(): boolean
     _handleDisconnect(): void
     _clearPendingUpdate(): void
     _checkRegionMigration(): void

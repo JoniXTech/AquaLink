@@ -10,6 +10,9 @@ const MAX_RECONNECT_ATTEMPTS = 3
 const RESUME_BACKOFF_MAX = 60000
 
 const VOICE_DATA_TIMEOUT = 90000
+// How long after Discord hands over new voice credentials a 4006 is still
+// taken for the old session closing (see _isTransient4006).
+const TRANSIENT_4006_MS = 10000
 
 const VOICE_FLUSH_DELAY = 50
 
@@ -150,6 +153,10 @@ class Connection {
     this._reconnectTimer = null
     this._lastVoiceDataUpdate = 0
     this._consecutiveFailures = 0
+    // When Discord last changed the voice credentials. 0 when they came
+    // from somewhere else (a migration, restore or rebuild carried them over).
+    this._gatewayVoiceAt = 0
+    this._transient4006Used = false
 
     this._voiceFlushTimer = null
     this._pendingUpdate = null
@@ -199,6 +206,8 @@ class Connection {
     this._lastEndpoint = null
     this._lastVoiceDataUpdate = 0
     this._lastSentVoiceKey = ''
+    this._gatewayVoiceAt = 0
+    this._transient4006Used = false
     this._lastStateReqAt = 0
     this._reconnectAttempts = 0
     this._consecutiveFailures = 0
@@ -231,6 +240,24 @@ class Connection {
 
   setServerUpdate(data) {
     return this._recovery.setServerUpdate(data)
+  }
+
+  _markGatewayVoice() {
+    this._gatewayVoiceAt = Date.now()
+    this._transient4006Used = false
+  }
+
+  // A 4006 while resuming can be the old voice session closing while the new
+  // one comes up, but only right after Discord handed over new credentials,
+  // and only once for them. Credentials carried over by a migration or
+  // restore that draw a 4006 are dead, and so is a set that draws a second
+  // one: ignoring those left the player silent for good.
+  _isTransient4006() {
+    const at = this._gatewayVoiceAt
+    if (!at || this._transient4006Used) return false
+    if (Date.now() - at > TRANSIENT_4006_MS) return false
+    this._transient4006Used = true
+    return true
   }
 
   _checkRegionMigration() {
@@ -315,11 +342,13 @@ class Connection {
       )
       this.voiceChannel = channelId
       p.voiceChannel = channelId
+      this._markGatewayVoice()
       needsUpdate = true
     }
 
     if (this.sessionId !== sessionId) {
       this.sessionId = sessionId
+      this._markGatewayVoice()
       this._lastVoiceDataUpdate = Date.now()
       this._stateFlags &= ~STATE.VOICE_DATA_STALE
       this._reconnectAttempts = 0

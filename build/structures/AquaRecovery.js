@@ -1072,9 +1072,11 @@ class AquaRecovery {
     return info
   }
 
-  // A restored or migrated player whose voice update was lost sits on the
-  // node silent and unconnected, with nothing left to send it again. Ask the
-  // node, re-send once, and report the player if that does not connect it.
+  // A restored or migrated player that is not connected after the move sits
+  // on the node silent. Ask the node what it holds. No voice: the update was
+  // lost, so re-send it once, and report the player if that does not help.
+  // Voice but not connected: Discord refused those credentials (4006), and
+  // re-sending them gets the same answer, so join afresh for new ones.
   _checkVoiceAfterMove(player, resent = false) {
     const gId = player.guildId
     const timer = setTimeout(async () => {
@@ -1093,6 +1095,26 @@ class AquaRecovery {
         return
       }
       if (!current() || remote?.state?.connected) return
+      const voice = remote?.voice
+      if (voice?.token && voice?.endpoint && voice?.sessionId) {
+        // A rejoin already under way reports itself if it fails.
+        if (player._reconnecting) return
+        if (this.aqua.debugTrace) {
+          this.aqua._trace('player.voiceRejoin', {
+            guildId: gId,
+            node: node?.name
+          })
+        }
+        player._freshVoiceRejoin(4006, {
+          op: 'event',
+          type: 'WebSocketClosedEvent',
+          guildId: gId,
+          code: 4006,
+          reason: 'Node holds voice credentials but is not connected',
+          byRemote: false
+        })
+        return
+      }
       if (!resent && player.connection?.resendVoiceUpdate(true)) {
         if (this.aqua.debugTrace) {
           this.aqua._trace('player.voiceResend', {
@@ -1262,6 +1284,8 @@ class AquaRecovery {
     connection._lastEndpoint = voiceState.ep || connection._lastEndpoint
     if (!connection.sessionId || !connection.endpoint || !connection.token)
       return false
+    // Not from Discord: a 4006 for these means they are dead.
+    connection._gatewayVoiceAt = 0
     connection._lastVoiceDataUpdate = Date.now()
     connection.resendVoiceUpdate(true)
     // Now rather than after the flush delay, so it leads this guild's
