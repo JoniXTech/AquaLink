@@ -108,6 +108,16 @@ class Node {
   static DEFAULT_HANDSHAKE_TIMEOUT = 15000
   static INFO_FETCH_TIMEOUT = 10000
   static INFINITE_BACKOFF = 10000
+  // A node that vanished without closing the socket (host frozen, a proxy
+  // holding the client side open) is only noticed on a write, and under Bun
+  // nothing was ever written. Ping every interval; the socket is dead after
+  // two intervals with no pong and no message, or once the node has sent
+  // stats and then sent none for STATS_TIMEOUT (Lavalink sends them every
+  // 60 s, NodeLink every 30 s).
+  static HEARTBEAT_INTERVAL = 15000
+  static STATS_TIMEOUT = 180000
+  // How long a dead socket's close may take before the close is run here.
+  static DEAD_CLOSE_GRACE = 1000
 
   constructor(aqua, connOptions, options = {}) {
     this.aqua = aqua
@@ -146,6 +156,9 @@ class Node {
 
     this._wsIsBun = !!process.isBun
     this._bunCleanup = null
+    this._heartbeatTimer = null
+    this._lastAliveAt = 0
+    this._lastStatsAt = 0
 
     this.stats = {
       players: 0,
@@ -166,6 +179,9 @@ class Node {
         error: this._handleError.bind(this),
         message: this._handleMessage.bind(this),
         close: this._handleClose.bind(this),
+        pong: () => {
+          this._lastAliveAt = Date.now()
+        },
         connect: () => this.connect().catch(() => {})
       }
     })
@@ -246,6 +262,7 @@ class Node {
   }
 
   _handleMessage(data, isBinary) {
+    this._lastAliveAt = Date.now()
     if (isBinary) return
 
     let payload
@@ -262,8 +279,10 @@ class Node {
     if (op === OPS_PLAYER_UPDATE)
       this._emitToPlayer(AqualinkEvents.PlayerUpdate, payload)
     else if (op === OPS_EVENT) this._emitToPlayer('event', payload)
-    else if (op === OPS_STATS) this._updateStats(payload)
-    else if (op === OPS_READY) this._handleReady(payload)
+    else if (op === OPS_STATS) {
+      this._lastStatsAt = this._lastAliveAt
+      this._updateStats(payload)
+    } else if (op === OPS_READY) this._handleReady(payload)
     else this._handleCustomStringOp(op, payload)
   }
 
@@ -466,7 +485,13 @@ class Node {
             this._scheduleReconnect()
           }
         }
+        // Once per socket: a dead socket's close can arrive after it was
+        // already run by hand (see _closeDeadSocket).
+        let closed = false
         const onClose = (code, reason) => {
+          if (closed) return
+          closed = true
+          this._clearHeartbeat()
           if (!opened) {
             settle(
               false,
@@ -500,7 +525,15 @@ class Node {
             })
           }
 
-          add('open', onOpen, true)
+          add(
+            'open',
+            () => {
+              this._startHeartbeat(ws, onClose)
+              onOpen()
+            },
+            true
+          )
+          add('pong', h.pong)
 
           add(
             'error',
@@ -546,21 +579,13 @@ class Node {
         })
 
         ws.once('open', () => {
+          this._startHeartbeat(ws, onClose)
           onOpen()
-          this._wsPingInterval = setInterval(() => {
-            if (ws.readyState === WS_STATES.OPEN) ws.ping?.()
-          }, 30000)
-          this._wsPingInterval.unref?.()
         })
         ws.on('error', onError)
         ws.on('message', h.message)
-        ws.once('close', (...args) => {
-          if (this._wsPingInterval) {
-            clearInterval(this._wsPingInterval)
-            this._wsPingInterval = null
-          }
-          onClose(...args)
-        })
+        ws.on('pong', h.pong)
+        ws.once('close', onClose)
 
         this.ws = ws
       } catch (err) {
@@ -574,14 +599,63 @@ class Node {
     return connectPromise
   }
 
+  _startHeartbeat(ws, onClose) {
+    this._clearHeartbeat()
+    const interval = Node.HEARTBEAT_INTERVAL
+    // Without ping() a quiet node would look dead, so only stats count.
+    const canPing = typeof ws.ping === 'function'
+    this._lastAliveAt = Date.now()
+    this._lastStatsAt = 0
+    this._heartbeatTimer = setInterval(() => {
+      if (this.ws !== ws || ws.readyState !== WS_STATES.OPEN) return
+      const now = Date.now()
+      const silent = now - this._lastAliveAt
+      const statsAge = this._lastStatsAt ? now - this._lastStatsAt : 0
+      if (canPing && silent >= 2 * interval) {
+        this._closeDeadSocket(ws, onClose, `no reply for ${silent} ms`)
+      } else if (statsAge >= Node.STATS_TIMEOUT) {
+        this._closeDeadSocket(ws, onClose, `no stats for ${statsAge} ms`)
+      } else if (canPing) {
+        try {
+          ws.ping()
+        } catch {}
+      }
+    }, interval)
+    unrefTimer(this._heartbeatTimer)
+  }
+
+  _clearHeartbeat() {
+    if (!this._heartbeatTimer) return
+    clearInterval(this._heartbeatTimer)
+    this._heartbeatTimer = null
+  }
+
+  // Closes the socket without a handshake, so the normal disconnect path
+  // runs: nodeDisconnect, failover of its players, reconnect.
+  _closeDeadSocket(ws, onClose, reason) {
+    this._clearHeartbeat()
+    this._emitError(
+      new Error(`Node ${this.name} stopped responding (${reason}), closing`)
+    )
+    try {
+      if (typeof ws.terminate === 'function') ws.terminate()
+      else ws.close()
+    } catch {}
+    // close() (Bun without terminate()) can wait for a close frame the peer
+    // will never send.
+    const timer = setTimeout(() => {
+      if (this.isDestroyed || this.ws !== ws) return
+      this._cleanup()
+      onClose(1006, reason)
+    }, Node.DEAD_CLOSE_GRACE)
+    unrefTimer(timer)
+  }
+
   _cleanup() {
     const ws = this.ws
     if (!ws) return
 
-    if (this._wsPingInterval) {
-      clearInterval(this._wsPingInterval)
-      this._wsPingInterval = null
-    }
+    this._clearHeartbeat()
 
     if (this._wsIsBun) {
       try {
