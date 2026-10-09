@@ -36,7 +36,6 @@ class ConnectionRecovery {
     }
 
     conn._stateGeneration++
-    conn._markGatewayVoice()
     conn._bumpGeneration('voice_server')
 
     if (conn._lastEndpoint !== endpoint) {

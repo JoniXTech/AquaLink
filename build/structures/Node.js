@@ -339,6 +339,23 @@ class Node {
 
   _emitToPlayer(eventName, payload) {
     const player = this._getPlayer(payload?.guildId)
+    // A voice close from a node the player has moved off is about a
+    // connection that no longer matters, and can land after the new
+    // node's voice is up.
+    if (
+      player?.nodes &&
+      player.nodes !== this &&
+      payload?.type === 'WebSocketClosedEvent'
+    ) {
+      if (this.aqua?.debugTrace) {
+        this.aqua._trace('player.socketClosed.foreignNode', {
+          guildId: player.guildId,
+          node: this.name,
+          code: payload.code
+        })
+      }
+      return
+    }
     if (!player?.emit) {
       if (eventName === 'event')
         this._adoptHolds?.get(String(payload?.guildId))?.push(payload)

@@ -963,10 +963,8 @@ declare module 'aqualink' {
     _executeVoiceUpdate(): Promise<boolean>
     _sendUpdate(payload: Record<string, unknown>): Promise<void>
     _prepareFreshVoiceJoin(): boolean
-    _markGatewayVoice(): void
     _bumpGeneration(reason: string): void
     _markVoicePatch(): void
-    _isTransient4006(): boolean
     _handleDisconnect(): void
     _clearPendingUpdate(): void
     _checkRegionMigration(): void

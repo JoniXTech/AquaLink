@@ -1218,8 +1218,6 @@ class AquaRecovery {
     connection._lastEndpoint = voiceState.ep || connection._lastEndpoint
     if (!connection.sessionId || !connection.endpoint || !connection.token)
       return false
-    // Not from Discord: a 4006 for these means they are dead.
-    connection._gatewayVoiceAt = 0
     connection._bumpGeneration('bootstrap')
     connection._lastVoiceDataUpdate = Date.now()
     connection.resendVoiceUpdate(true)
