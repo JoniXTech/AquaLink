@@ -36,6 +36,7 @@ class ConnectionRecovery {
     }
 
     conn._stateGeneration++
+    conn._markGatewayVoice()
 
     if (conn._lastEndpoint !== endpoint) {
       conn.sequence = 0
