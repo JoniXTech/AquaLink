@@ -948,12 +948,14 @@ declare module 'aqualink' {
     updateSequence(seq: number): void
     destroy(): void
     attemptResume(): Promise<boolean>
-    resendVoiceUpdate(): boolean
+    resendVoiceUpdate(force?: boolean): boolean
+    /** Sends a scheduled voice update now. True once the node accepted it. */
+    flushVoiceUpdate(): Promise<boolean>
 
     // Internal Methods
     _extractRegion(endpoint: string): string | null
     _scheduleVoiceUpdate(isResume?: boolean): void
-    _executeVoiceUpdate(): void
+    _executeVoiceUpdate(): Promise<boolean>
     _sendUpdate(payload: Record<string, unknown>): Promise<void>
     _prepareFreshVoiceJoin(): boolean
     _handleDisconnect(): void

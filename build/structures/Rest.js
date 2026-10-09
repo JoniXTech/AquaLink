@@ -59,6 +59,15 @@ const HTTP2_THRESHOLD = 1024
 const MAX_HEADER_POOL = 10
 const DEFAULT_MAX_SOCKETS = 128
 const H2_TIMEOUT = 60000
+// NodeLink admits two concurrent operations per (session, guild) and answers
+// a third with 429 without applying it, so one guild's player requests go out
+// one at a time, in the order they were made. A 429 is retried after its
+// Retry-After, a few times only: every rejection raises the guild's abuse
+// score, and enough of them quarantine it for 15 s.
+const GUILD_PLAYER_PATH = /\/sessions\/[^/]+\/players\/(\d+)/
+const PLAYER_RETRY_ATTEMPTS = 3
+const PLAYER_RETRY_MAX_WAIT = 15000
+const PLAYER_RETRY_JITTER = 250
 
 const ERRORS = Object.freeze({
   NO_SESSION: new Error('Session ID required'),
@@ -123,6 +132,32 @@ const _functions = {
       return createZstdDecompress()
     }
     return type === ENCODING_BR ? createBrotliDecompress() : createUnzip()
+  },
+
+  // Milliseconds to wait before retrying a rejected player request, or -1
+  // when it should not be retried.
+  retryDelay(error) {
+    if ((error?.statusCode || error?.response?.statusCode) !== 429) return -1
+    const header = error.headers?.['retry-after']
+    const seconds = Number(Array.isArray(header) ? header[0] : header)
+    const wait = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 1000
+    if (wait > PLAYER_RETRY_MAX_WAIT) return -1
+    return wait + Math.floor(Math.random() * PLAYER_RETRY_JITTER)
+  },
+
+  sleep(ms, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) return reject(abortError(signal.reason))
+      const onAbort = () => {
+        clearTimeout(timer)
+        reject(abortError(signal.reason))
+      }
+      const timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort)
+        resolve()
+      }, ms)
+      signal?.addEventListener('abort', onAbort, { once: true })
+    })
   },
 
   decompressSync(buf, type) {
@@ -191,6 +226,9 @@ class Rest {
     this._h2 = null
     this._h2Timer = null
     this.calls = 0
+    this._destroyed = false
+    // guildId -> the settled tail of that guild's player requests
+    this._guildQueues = new Map()
     // Derived from maxSockets, because that is where the limiter stops being
     // the binding constraint: above it the overflow queues inside the agent,
     // which is FIFO and has no idea a player call outranks a search. Raising
@@ -417,11 +455,66 @@ class Rest {
       Number(options?.timeout) > 0 ? Number(options.timeout) : this.timeout
     const lane = options?.priority || this._priorityFor(endpoint)
 
-    return this._limiter.run(
-      lane,
-      () => this._send(method, endpoint, body, signal, timeout),
-      signal
+    const guildId = GUILD_PLAYER_PATH.exec(endpoint)?.[1]
+    if (!guildId) {
+      return this._limiter.run(
+        lane,
+        () => this._send(method, endpoint, body, signal, timeout),
+        signal
+      )
+    }
+    // Encoded now, so a queued request sends what the caller passed rather
+    // than whatever the object holds by the time the guild's turn comes.
+    const payload =
+      body === undefined || typeof body === 'string'
+        ? body
+        : JSON.stringify(body)
+    return this._inGuildOrder(guildId, () =>
+      this._sendPlayerRequest(lane, method, endpoint, payload, signal, timeout)
     )
+  }
+
+  _inGuildOrder(guildId, task) {
+    const queues = this._guildQueues
+    const result = (queues.get(guildId) || Promise.resolve()).then(() => {
+      if (this._destroyed) throw new Error('Rest destroyed')
+      return task()
+    })
+    const tail = result.then(
+      () => {},
+      () => {}
+    )
+    queues.set(guildId, tail)
+    tail.then(() => {
+      if (queues.get(guildId) === tail) queues.delete(guildId)
+    })
+    return result
+  }
+
+  async _sendPlayerRequest(lane, method, endpoint, payload, signal, timeout) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this._limiter.run(
+          lane,
+          () => this._send(method, endpoint, payload, signal, timeout),
+          signal
+        )
+      } catch (error) {
+        const wait =
+          attempt < PLAYER_RETRY_ATTEMPTS ? _functions.retryDelay(error) : -1
+        if (wait < 0 || this._destroyed) throw error
+        if (this.aqua?.debugTrace) {
+          this.aqua._trace('rest.player.retry', {
+            method,
+            endpoint,
+            attempt,
+            wait
+          })
+        }
+        await _functions.sleep(wait, signal)
+        if (this._destroyed) throw error
+      }
+    }
   }
 
   async _send(method, endpoint, body, signal, timeout) {
@@ -1060,7 +1153,9 @@ class Rest {
   destroy() {
     // Anything still queued will never be sent, so reject it rather than
     // leaving the callers hanging.
+    this._destroyed = true
     this._limiter?.clear(new Error('Rest destroyed'))
+    this._guildQueues?.clear()
     const autoplayAgent = this._autoplayAgent
     const primaryAgent = this.agent
     if (this.agent) {

@@ -1,6 +1,6 @@
 const { AqualinkEvents } = require('./AqualinkEvents')
 const ConnectionRecovery = require('./ConnectionRecovery')
-const { reportSuppressedError } = require('./Reporting')
+const { emitOperationalError, reportSuppressedError } = require('./Reporting')
 
 const POOL_SIZE = 12
 const UPDATE_TIMEOUT = 4000
@@ -488,8 +488,21 @@ class Connection {
     _functions.safeUnref(this._voiceFlushTimer)
   }
 
+  // Sends a scheduled voice update now instead of after the flush delay, so
+  // it is the first request of a restore. Resolves true once the node has
+  // accepted it, false if there was nothing to send or it failed.
+  flushVoiceUpdate() {
+    if (this._destroyed || !(this._stateFlags & STATE.UPDATE_SCHEDULED))
+      return Promise.resolve(false)
+    if (this._voiceFlushTimer) {
+      clearTimeout(this._voiceFlushTimer)
+      this._voiceFlushTimer = null
+    }
+    return this._executeVoiceUpdate()
+  }
+
   _executeVoiceUpdate() {
-    if (this._destroyed) return
+    if (this._destroyed) return Promise.resolve(false)
     if (this._stateFlags & STATE.DISCONNECTING) {
       this._stateFlags &= ~STATE.UPDATE_SCHEDULED
       this._voiceFlushTimer = null
@@ -497,7 +510,7 @@ class Connection {
         sharedPool.release(this._pendingUpdate.payload)
         this._pendingUpdate = null
       }
-      return
+      return Promise.resolve(false)
     }
     this._stateFlags &= ~STATE.UPDATE_SCHEDULED
     this._voiceFlushTimer = null
@@ -505,24 +518,45 @@ class Connection {
     const pending = this._pendingUpdate
     this._pendingUpdate = null
 
-    if (!pending) return
+    if (!pending) return Promise.resolve(false)
     if (Date.now() - pending.timestamp > UPDATE_TIMEOUT) {
       sharedPool.release(pending.payload)
-      return
+      return Promise.resolve(false)
     }
 
     const key = this._makeVoiceKey()
     if (key === this._lastSentVoiceKey) {
       sharedPool.release(pending.payload)
-      return
+      return Promise.resolve(false)
     }
+    // Set before the send so a re-send of the same data while this one is in
+    // flight is dropped, and cleared if it fails: the key means "the node has
+    // this", and a failed send left it with nothing, so the next re-send has
+    // to go out.
     this._lastSentVoiceKey = key
+    const aqua = this._aqua
+    const guildId = this._guildId
 
-    this._sendUpdate(pending.payload)
-      .catch((error) =>
-        reportSuppressedError(this._aqua, 'connection.update.execute', error, {
-          guildId: this._guildId
-        })
+    return this._sendUpdate(pending.payload)
+      .then(
+        () => true,
+        (error) => {
+          if (this._lastSentVoiceKey === key) this._lastSentVoiceKey = ''
+          if (this._destroyed) {
+            reportSuppressedError(aqua, 'connection.update.execute', error, {
+              guildId
+            })
+          } else {
+            emitOperationalError(
+              aqua,
+              null,
+              new Error(
+                `Voice update failed for guild ${guildId}: ${error?.message || error}`
+              )
+            )
+          }
+          return false
+        }
       )
       .finally(() => sharedPool.release(pending.payload))
   }
