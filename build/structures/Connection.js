@@ -342,6 +342,7 @@ class Connection {
       )
       this.voiceChannel = channelId
       p.voiceChannel = channelId
+      p._armVoiceDeadline?.()
       this._markGatewayVoice()
       needsUpdate = true
     }
@@ -572,7 +573,10 @@ class Connection {
 
     return this._sendUpdate(pending.payload)
       .then(
-        () => true,
+        () => {
+          this._player?._armVoiceDeadline?.(undefined, true)
+          return true
+        },
         (error) => {
           if (this._lastSentVoiceKey === key) this._lastSentVoiceKey = ''
           if (this._destroyed) {

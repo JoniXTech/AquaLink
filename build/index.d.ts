@@ -41,6 +41,7 @@ declare module 'aqualink' {
     trackResolveConcurrency: number
     brokenPlayerStorePath: string
     voiceStateInterval: number
+    voiceConnectTimeout: number
 
     // Internal State Management
     _nodeStates: Map<
@@ -560,7 +561,7 @@ declare module 'aqualink' {
     _handleEvent(payload: Record<string, unknown>): Promise<void>
     _voiceWatchdog(): Promise<void>
     _attemptVoiceResume(): Promise<void>
-    _freshVoiceRejoin(code: number, payload?: Record<string, unknown> | null): Promise<void>
+    _armVoiceDeadline(ms?: number, ifNone?: boolean): void
     _getAutoplayTrack(
       sourceName: string,
       identifier: string,
@@ -1038,6 +1039,8 @@ declare module 'aqualink' {
      * N guilds leaving costs N intervals.
      */
     voiceStateInterval?: number
+    /** How long a voice join may take to connect before it is retried, then the player destroyed. Default 30000. */
+    voiceConnectTimeout?: number
     /** Per-request REST timeout, default 30000. Unrelated to the WS handshake timeout. */
     restTimeout?: number
     /**

@@ -735,6 +735,7 @@ class Player extends EventEmitter {
 
     this.voiceChannel = voiceChannel
     this._voiceDownSince = 0
+    this._armVoiceDeadline()
     this.send({
       guild_id: this.guildId,
       channel_id: voiceChannel,
@@ -1497,8 +1498,8 @@ class Player extends EventEmitter {
     return this._lifecycleController.attemptVoiceResume(abortSignal)
   }
 
-  async _freshVoiceRejoin(code, payload) {
-    return this._lifecycleController.freshVoiceRejoin(code, payload)
+  _armVoiceDeadline(ms, ifNone = false) {
+    this._lifecycleController?.armVoiceDeadline(ms, ifNone)
   }
 
   async socketClosed(_player, _track, payload) {

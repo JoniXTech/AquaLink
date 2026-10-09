@@ -18,9 +18,8 @@ const httpStatus = (error) =>
   error?.statusCode || error?.status || error?.response?.statusCode || null
 
 // A voice update returns before the handshake; NodeLink reports
-// `connected` within about a second. A restored or migrated player that
-// still is not connected after this long gets one forced re-send, then is
-// reported.
+// `connected` within about a second. So a restored or migrated player gets
+// a short voice deadline: the node's answer about it is quick.
 const RESTORE_VOICE_CHECK_MS = 5000
 
 class AquaRecovery {
@@ -633,7 +632,7 @@ class AquaRecovery {
       }
     }
     // Every migration and in-place rebuild ends here.
-    this._checkVoiceAfterMove(newPlayer)
+    newPlayer._armVoiceDeadline?.(RESTORE_VOICE_CHECK_MS)
   }
 
   async loadPlayers(filePath = './AquaPlayers.jsonl') {
@@ -1068,73 +1067,8 @@ class AquaRecovery {
     }
     player.restored = info
     this.aqua.emit(AqualinkEvents.PlayerRestored, player, info)
-    this._checkVoiceAfterMove(player)
+    player._armVoiceDeadline?.(RESTORE_VOICE_CHECK_MS)
     return info
-  }
-
-  // A restored or migrated player that is not connected after the move sits
-  // on the node silent. Ask the node what it holds. No voice: the update was
-  // lost, so re-send it once, and report the player if that does not help.
-  // Voice but not connected: Discord refused those credentials (4006), and
-  // re-sending them gets the same answer, so join afresh for new ones.
-  _checkVoiceAfterMove(player, resent = false) {
-    const gId = player.guildId
-    const timer = setTimeout(async () => {
-      const current = () =>
-        !player.destroyed && this.aqua?.players.get(gId) === player
-      if (!current() || !player.voiceChannel || player.connected) return
-      const node = player.nodes
-      let remote
-      try {
-        remote = await node.rest.getPlayer(gId)
-      } catch (error) {
-        reportSuppressedError(this.aqua, 'player.voiceCheck', error, {
-          guildId: gId,
-          node: node?.name
-        })
-        return
-      }
-      if (!current() || remote?.state?.connected) return
-      const voice = remote?.voice
-      if (voice?.token && voice?.endpoint && voice?.sessionId) {
-        // A rejoin already under way reports itself if it fails.
-        if (player._reconnecting) return
-        if (this.aqua.debugTrace) {
-          this.aqua._trace('player.voiceRejoin', {
-            guildId: gId,
-            node: node?.name
-          })
-        }
-        player._freshVoiceRejoin(4006, {
-          op: 'event',
-          type: 'WebSocketClosedEvent',
-          guildId: gId,
-          code: 4006,
-          reason: 'Node holds voice credentials but is not connected',
-          byRemote: false
-        })
-        return
-      }
-      if (!resent && player.connection?.resendVoiceUpdate(true)) {
-        if (this.aqua.debugTrace) {
-          this.aqua._trace('player.voiceResend', {
-            guildId: gId,
-            node: node?.name
-          })
-        }
-        player.connection.flushVoiceUpdate()
-        this._checkVoiceAfterMove(player, true)
-        return
-      }
-      emitOperationalError(
-        this.aqua,
-        null,
-        new Error(
-          `Player for guild ${gId} has no voice connection on node ${node?.name || node?.host} after moving there`
-        )
-      )
-    }, RESTORE_VOICE_CHECK_MS)
-    timer.unref?.()
   }
 
   async waitForFirstNode(timeout = this.NODE_TIMEOUT) {

@@ -6,7 +6,11 @@ const FRESH_REJOIN_DELAYS = Object.freeze({
   4014: 3000,
   4022: 5000
 })
-const FRESH_REJOIN_GUARD_MS = 30000
+// After the voice deadline the node is asked first; then up to this many
+// fresh joins, plus one re-send when the node never got the voice update.
+const DEADLINE_REJOINS = 2
+// How long after a re-send the node is asked again: it answers quickly.
+const DEADLINE_RECHECK_MS = 5000
 
 class PlayerLifecycle {
   constructor(player, deps) {
@@ -24,6 +28,11 @@ class PlayerLifecycle {
     this.PAUSE_DELAY = deps.PAUSE_DELAY
     this.RETRY_BACKOFF_BASE = deps.RETRY_BACKOFF_BASE
     this.RETRY_BACKOFF_MAX = deps.RETRY_BACKOFF_MAX
+
+    this._deadlineTimer = null
+    this._deadlineSeq = 0
+    this._deadlineRejoins = 0
+    this._deadlineResent = false
   }
 
   handlePlayerUpdate(packet) {
@@ -71,6 +80,7 @@ class PlayerLifecycle {
         }, 1000)
       }
     } else {
+      this.clearVoiceDeadline(true)
       player._voiceDownSince = 0
       player.reconnectionRetries = 0
       player.state = this.PLAYER_STATE.READY
@@ -278,38 +288,13 @@ class PlayerLifecycle {
         return
       }
 
-      if (!player.connection?._prepareFreshVoiceJoin?.()) {
+      if (!this.rejoinVoice(voiceChannel)) {
         throw new Error(
           `Unable to prepare fresh voice join (guild=${player.guildId})`
         )
       }
-
-      player.connect({
-        guildId: player.guildId,
-        voiceChannel,
-        deaf: player.deaf,
-        mute: player.mute
-      })
+      // The join armed the voice deadline, which takes it from here.
       player._isActivelyReconnecting = false
-
-      const queueDelay =
-        player.aqua?.getVoiceStateQueueDelay?.(player.guildId) || 0
-      player._createTimer(() => {
-        if (player.connected || !player._isVoiceRecoveryActive(recoveryToken))
-          return
-        player._reconnecting = false
-        player._voiceRecovering = false
-        player._clearVoiceRecovery(recoveryToken, 'fresh_rejoin_timed_out')
-        player.aqua?.emit?.(AqualinkEvents.ReconnectionFailed, player, {
-          code,
-          error: new Error(
-            `Fresh voice rejoin timed out (guild=${player.guildId})`
-          ),
-          fresh: true,
-          payload,
-          retriesLeft: 0
-        })
-      }, FRESH_REJOIN_GUARD_MS + queueDelay)
     } catch (error) {
       player._reconnecting = false
       player._isActivelyReconnecting = false
@@ -320,6 +305,163 @@ class PlayerLifecycle {
       })
       player.aqua?.emit?.(AqualinkEvents.SocketClosed, player, payload)
     }
+  }
+
+  // Drops the voice credentials and joins the channel again, so Discord
+  // hands out new ones. _reconnecting stays set until the player connects:
+  // the node closes the replaced voice connection (NodeLink with a 4014),
+  // and taking that for a new failure would wipe the new credentials.
+  rejoinVoice(voiceChannel) {
+    const player = this.player
+    if (!voiceChannel || !player.connection?._prepareFreshVoiceJoin?.())
+      return false
+    player.connected = false
+    player._reconnecting = true
+    player.connect({
+      guildId: player.guildId,
+      voiceChannel,
+      deaf: player.deaf,
+      mute: player.mute
+    })
+    return true
+  }
+
+  _voiceDeadlineMs() {
+    const ms = Number(this.player.aqua?.voiceConnectTimeout)
+    return Number.isFinite(ms) && ms > 0 ? ms : 30000
+  }
+
+  // One deadline per player for its voice to come up, armed by every voice
+  // attempt and cleared by a connected playerUpdate. Every other recovery
+  // path is skipped while some flag is set (_reconnecting, _resuming,
+  // _voiceRecovering) or on a NodeLink node, and a flag that never cleared
+  // left the player silent for good. The deadline ignores all of them.
+  // `ifNone` keeps a pending deadline: a voice PATCH belongs to the attempt
+  // that armed it and must not stretch that attempt's window.
+  armVoiceDeadline(ms = this._voiceDeadlineMs(), ifNone = false) {
+    const player = this.player
+    if (player.destroyed || !player._pendingTimers) return
+    if (this._deadlineTimer && ifNone) return
+    this._clearDeadlineTimer()
+    const seq = this._deadlineSeq
+    this._deadlineTimer = player._createTimer(() => {
+      this._deadlineTimer = null
+      this.onVoiceDeadline(seq).catch((error) =>
+        reportSuppressedError(player, 'player.voiceDeadline', error, {
+          guildId: player.guildId
+        })
+      )
+    }, ms)
+  }
+
+  clearVoiceDeadline(reset = false) {
+    this._clearDeadlineTimer()
+    if (!reset) return
+    this._deadlineRejoins = 0
+    this._deadlineResent = false
+  }
+
+  _clearDeadlineTimer() {
+    this._deadlineSeq++
+    if (!this._deadlineTimer) return
+    clearTimeout(this._deadlineTimer)
+    this.player._pendingTimers?.delete(this._deadlineTimer)
+    this._deadlineTimer = null
+  }
+
+  async onVoiceDeadline(seq) {
+    const player = this.player
+    if (player.destroyed || seq !== this._deadlineSeq) return
+    const guildId = player.guildId
+
+    player._reconnecting = false
+    player._isActivelyReconnecting = false
+    player._resuming = false
+    player._voiceRecovering = false
+    player._clearVoiceRecovery(undefined, 'voice_deadline')
+
+    // An idle player may get no playerUpdate at all, so `connected` is not
+    // proof that it is down.
+    const node = player.nodes
+    let remote = null
+    try {
+      remote = await node.rest.getPlayer(guildId)
+    } catch (error) {
+      reportSuppressedError(player, 'player.voiceDeadline.get', error, {
+        guildId,
+        node: node?.name
+      })
+    }
+    if (player.destroyed || seq !== this._deadlineSeq) return
+    if (player.aqua?.debugTrace) {
+      player.aqua._trace('player.voiceDeadline', {
+        guildId,
+        node: node?.name,
+        remoteConnected: !!remote?.state?.connected,
+        rejoins: this._deadlineRejoins,
+        resent: this._deadlineResent
+      })
+    }
+
+    if (remote?.state?.connected) {
+      player.connected = true
+      this.clearVoiceDeadline(true)
+      return
+    }
+
+    const voiceChannel = this._functions.toId(player.voiceChannel)
+    if (!voiceChannel || player.connection?.isWaitingForDisconnect) {
+      player.destroy()
+      return
+    }
+
+    // No voice on the node: the update was lost (a 429), so send it again.
+    // Voice but not connected: Discord refused those credentials, and only
+    // a fresh join gets new ones.
+    const voice = remote?.voice
+    const nodeHasVoice = !!(voice?.token && voice?.endpoint && voice?.sessionId)
+    if (!nodeHasVoice && !this._deadlineResent) {
+      if (player.connection?.resendVoiceUpdate(true)) {
+        this._deadlineResent = true
+        this.armVoiceDeadline(DEADLINE_RECHECK_MS)
+        player.connection.flushVoiceUpdate()
+        return
+      }
+    }
+
+    if (this._deadlineRejoins < DEADLINE_REJOINS) {
+      this._deadlineRejoins++
+      player._claimVoiceRecovery('voice_deadline')
+      player.aqua?.emit?.(AqualinkEvents.PlayerReconnect, player, {
+        code: null,
+        fresh: true,
+        resuming: false,
+        reason: 'voice_deadline'
+      })
+      if (this.rejoinVoice(voiceChannel)) return
+    }
+
+    // Out of attempts. SocketClosed then destroy, so "socketClosed ends the
+    // player" holds on this path too.
+    const payload = {
+      op: 'event',
+      type: 'WebSocketClosedEvent',
+      guildId,
+      code: null,
+      reason: 'voice_deadline',
+      byRemote: false,
+      timeout: true
+    }
+    player.aqua?.emit?.(AqualinkEvents.ReconnectionFailed, player, {
+      code: null,
+      error: new Error(`Voice did not connect in time (guild=${guildId})`),
+      fresh: true,
+      payload,
+      reason: 'voice_deadline',
+      retriesLeft: 0
+    })
+    player.aqua?.emit?.(AqualinkEvents.SocketClosed, player, payload)
+    player.destroy()
   }
 
   async socketClosed(_player, _track, payload) {

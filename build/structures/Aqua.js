@@ -98,7 +98,8 @@ const DEFAULT_OPTIONS = Object.freeze({
   restConcurrency: null,
   restSearchConcurrency: null,
   brokenPlayerStorePath: null,
-  voiceStateInterval: DEFAULT_VOICE_STATE_INTERVAL
+  voiceStateInterval: DEFAULT_VOICE_STATE_INTERVAL,
+  voiceConnectTimeout: 30000
 })
 
 const _functions = {
@@ -187,6 +188,13 @@ class Aqua extends EventEmitter {
       merged.voiceStateInterval >= 0
         ? merged.voiceStateInterval
         : DEFAULT_VOICE_STATE_INTERVAL
+    // How long a voice attempt may take to connect before the player's
+    // voice deadline asks the node, rejoins, and finally gives up.
+    this.voiceConnectTimeout =
+      Number.isFinite(merged.voiceConnectTimeout) &&
+      merged.voiceConnectTimeout > 0
+        ? merged.voiceConnectTimeout
+        : DEFAULT_OPTIONS.voiceConnectTimeout
     this.brokenPlayerStorePath =
       typeof merged.brokenPlayerStorePath === 'string' &&
       merged.brokenPlayerStorePath.trim()
