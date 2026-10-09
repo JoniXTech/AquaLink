@@ -1,3 +1,47 @@
+# Unreleased
+
+## Voice recovery rework
+
+Voice closes are now decided by one number, the connection's voice
+`generation`, plus a per-player voice deadline, instead of a set of
+suppression flags that could get stuck and leave a player silent for good.
+
+- A voice close waits 2 s. If the voice changed (a new join, new credentials
+  from Discord, an adopt, or a voice PATCH to the node) within 2 s on either
+  side of it, it was the old connection's and is ignored. So are closes from
+  a node the player has moved off.
+- A current close: no voice channel, or 4014/4022, ends the player
+  (`socketClosed`, then destroy). 4015 and the node's own codes are left to
+  the server, which reconnects itself. Anything else (4006, 4009, ...) drops
+  the credentials and rejoins the same channel.
+- New option `voiceConnectTimeout` (default 30000). Every voice attempt arms
+  it; when it runs out, aqualink asks the node, then re-sends or rejoins. It
+  runs on every node type, NodeLink included.
+- At most two rejoins (closes and deadline together) until the player
+  connects. After that: `reconnectionFailed`, `socketClosed`, destroy.
+- An unchanged voice update is now re-sent after a close, rather than being
+  deduplicated, because the node takes it as "reconnect".
+
+## Event changes
+
+- `socketClosed`: the payload is typed as `VoiceClosePayload`. When the
+  deadline gives up, `code` is `null` and `timeout` is `true`. Every
+  `socketClosed` aqualink emits is now followed by destroy.
+- `reconnectionFailed`: emitted once, when recovery gives up, with
+  `retriesLeft: 0` and `reason` (`voice_deadline` or `rejoins_exhausted`).
+  Typed as `ReconnectionFailedData`.
+- `playerReconnect`: now typed (`PlayerReconnectData`). It carries `reason`
+  for a rejoin.
+- `playerReconnected` is no longer emitted. A failed voice rejoins the same
+  player instead of building a new one.
+
+## Removed
+
+`Player.reconnectionRetries`, `_voiceRecovering`, `_isActivelyReconnecting`,
+`_voiceDownSince`, the voice recovery tokens, and the client-side voice
+resume. `_reconnecting` now only means a rejoin is under way. `_resuming`
+and `TrackStart`'s `resumed` flag are unchanged.
+
 # Aqualink 2.7.1
 
 - ignore message errors on shouldDeleteMessage

@@ -1770,6 +1770,35 @@ declare module 'aqualink' {
     | 'ended' // it ended with nothing after it: the player idles
     | 'idle' // nothing played when saved, nothing plays now
 
+  /** A voice close, or (with `timeout`) a voice that never came up. */
+  export interface VoiceClosePayload {
+    op?: 'event'
+    type?: 'WebSocketClosedEvent'
+    guildId: string
+    /** Discord's close code; null when the voice deadline gave up. */
+    code: number | null
+    reason: string
+    byRemote: boolean
+    timeout?: true
+  }
+
+  export interface ReconnectionFailedData {
+    code: number | null
+    error: Error
+    fresh: true
+    payload: VoiceClosePayload
+    reason: 'voice_deadline' | 'rejoins_exhausted'
+    retriesLeft: 0
+  }
+
+  export interface PlayerReconnectData {
+    /** True for the node's own reconnect (PlayerReconnectingEvent). */
+    resuming: boolean
+    fresh?: true
+    code?: number | null
+    reason?: 'socket_closed' | 'voice_deadline'
+  }
+
   export interface RestoreInfo {
     /** The player the node kept through the restart was taken over. */
     adopted: boolean
@@ -2065,7 +2094,9 @@ declare module 'aqualink' {
       reason: MigrationReason
     ) => void
     playerRestored: (player: Player, info: RestoreInfo) => void
+    /** No longer emitted: a failed voice now rejoins the same player. */
     playerReconnected: (player: Player, data: Record<string, unknown>) => void
+    playerReconnect: (player: Player, data: PlayerReconnectData) => void
     trackStart: (player: Player, track: Track) => void
     trackEnd: (player: Player, track: Track, reason?: string) => void
     trackError: (player: Player, track: Track, error: Error | unknown) => void
@@ -2079,8 +2110,8 @@ declare module 'aqualink' {
     queueEnd: (player: Player, track: Track | null) => void
     playerMove: (oldChannel: string, newChannel: string) => void
     playersRebuilt: (node: Node, count: number) => void
-    reconnectionFailed: (player: Player, data: Record<string, unknown>) => void
-    socketClosed: (player: Player, payload: Record<string, unknown>) => void
+    reconnectionFailed: (player: Player, data: ReconnectionFailedData) => void
+    socketClosed: (player: Player, payload: VoiceClosePayload) => void
     lyricsLine: (
       player: Player,
       track: Track,
@@ -2238,6 +2269,7 @@ declare module 'aqualink' {
     readonly PlayerUpdate: 'playerUpdate'
     readonly PlayerMove: 'playerMove'
     readonly PlayerReconnected: 'playerReconnected'
+    readonly PlayerReconnect: 'playerReconnect'
     readonly AutoplayFailed: 'autoplayFailed'
     readonly ReconnectionFailed: 'reconnectionFailed'
     readonly NodeConnect: 'nodeConnect'
