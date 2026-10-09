@@ -157,6 +157,9 @@ class Connection {
     // from somewhere else (a migration, restore or rebuild carried them over).
     this._gatewayVoiceAt = 0
     this._transient4006Used = false
+    // Which voice attempt is current, and when the voice last changed.
+    this.generation = 0
+    this._voiceChangedAt = 0
 
     this._voiceFlushTimer = null
     this._pendingUpdate = null
@@ -240,6 +243,27 @@ class Connection {
 
   setServerUpdate(data) {
     return this._recovery.setServerUpdate(data)
+  }
+
+  // Bumped by every gateway voice state send (op 4), every credential change
+  // from Discord, and every adopt or carried-over set of credentials. A
+  // voice close is matched against it (see PlayerLifecycle.socketClosed).
+  _bumpGeneration(reason) {
+    this.generation++
+    this._voiceChangedAt = Date.now()
+    if (this._aqua?.debugTrace) {
+      this._aqua._trace('connection.generation', {
+        guildId: this._guildId,
+        generation: this.generation,
+        reason
+      })
+    }
+  }
+
+  // A voice PATCH makes the node replace its voice connection, and the old
+  // one's close can arrive after it.
+  _markVoicePatch() {
+    this._voiceChangedAt = Date.now()
   }
 
   _markGatewayVoice() {
@@ -344,12 +368,14 @@ class Connection {
       p.voiceChannel = channelId
       p._armVoiceDeadline?.()
       this._markGatewayVoice()
+      this._bumpGeneration('voice_state_channel')
       needsUpdate = true
     }
 
     if (this.sessionId !== sessionId) {
       this.sessionId = sessionId
       this._markGatewayVoice()
+      this._bumpGeneration('voice_state_session')
       this._lastVoiceDataUpdate = Date.now()
       this._stateFlags &= ~STATE.VOICE_DATA_STALE
       this._reconnectAttempts = 0

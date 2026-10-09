@@ -372,6 +372,7 @@ class Player extends EventEmitter {
   // `streaming` is the track the node is playing on the old connection.
   _beginAdoptGuard(displaced = null, streaming = null) {
     this._endAdoptGuard()
+    this.connection?._bumpGeneration?.('adopt')
     const guard = { sent: false, streaming, displaced, timer: null }
     guard.timer = this._createTimer(() => {
       if (this._adoptGuard === guard) this._endAdoptGuard('timeout')
@@ -1507,6 +1508,7 @@ class Player extends EventEmitter {
   }
 
   send(data) {
+    this.connection?._bumpGeneration?.('gateway_voice_state')
     try {
       if (this.aqua?.queueVoiceStateUpdate) {
         return this.aqua.queueVoiceStateUpdate(data)

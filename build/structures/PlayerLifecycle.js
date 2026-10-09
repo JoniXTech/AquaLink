@@ -468,9 +468,14 @@ class PlayerLifecycle {
     const player = this.player
     if (player.destroyed || player._reconnecting) return
     if (player.aqua?.debugTrace) {
+      const conn = player.connection
       player.aqua._trace('player.socketClosed', {
         guildId: player.guildId,
-        code: payload?.code
+        code: payload?.code,
+        generation: conn?.generation,
+        sinceVoiceChange: conn?._voiceChangedAt
+          ? Date.now() - conn._voiceChangedAt
+          : null
       })
     }
 

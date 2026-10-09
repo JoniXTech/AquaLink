@@ -927,6 +927,8 @@ declare module 'aqualink' {
     token: string | null
     region: string | null
     sequence: number
+    /** Which voice attempt is current. */
+    generation: number
 
     // Internal Properties
     _player: Player
@@ -941,6 +943,7 @@ declare module 'aqualink' {
     _hasMoveListeners: boolean
     _lastSentVoiceKey: string
     _lastVoiceDataUpdate: number
+    _voiceChangedAt: number
     _stateFlags: number
     _regionMigrationAttempted: boolean
 
@@ -961,6 +964,8 @@ declare module 'aqualink' {
     _sendUpdate(payload: Record<string, unknown>): Promise<void>
     _prepareFreshVoiceJoin(): boolean
     _markGatewayVoice(): void
+    _bumpGeneration(reason: string): void
+    _markVoicePatch(): void
     _isTransient4006(): boolean
     _handleDisconnect(): void
     _clearPendingUpdate(): void

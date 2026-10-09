@@ -1220,6 +1220,7 @@ class AquaRecovery {
       return false
     // Not from Discord: a 4006 for these means they are dead.
     connection._gatewayVoiceAt = 0
+    connection._bumpGeneration('bootstrap')
     connection._lastVoiceDataUpdate = Date.now()
     connection.resendVoiceUpdate(true)
     // Now rather than after the flush delay, so it leads this guild's

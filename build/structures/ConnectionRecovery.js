@@ -37,6 +37,7 @@ class ConnectionRecovery {
 
     conn._stateGeneration++
     conn._markGatewayVoice()
+    conn._bumpGeneration('voice_server')
 
     if (conn._lastEndpoint !== endpoint) {
       conn.sequence = 0
@@ -365,7 +366,9 @@ class ConnectionRecovery {
             !!payload?.data?.voice?.endpoint
         })
       }
+      conn._markVoicePatch()
       await conn._rest.updatePlayer(payload)
+      conn._markVoicePatch()
       // The adopted player's voice now points at this gateway session.
       const guard = conn._player?._adoptGuard
       if (guard && payload?.data?.voice?.sessionId) guard.sent = true
