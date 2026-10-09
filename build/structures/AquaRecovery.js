@@ -17,6 +17,12 @@ const HELD_ENDINGS = new Set([
 const httpStatus = (error) =>
   error?.statusCode || error?.status || error?.response?.statusCode || null
 
+// A voice update returns before the handshake; NodeLink reports
+// `connected` within about a second. A restored or migrated player that
+// still is not connected after this long gets one forced re-send, then is
+// reported.
+const RESTORE_VOICE_CHECK_MS = 5000
+
 class AquaRecovery {
   constructor(aqua, deps) {
     this.aqua = aqua
@@ -564,14 +570,19 @@ class AquaRecovery {
   }
 
   async restorePlayerState(newPlayer, state) {
+    // Run in order, not together: play() resolves its track before it sends,
+    // so a pause started alongside it reached the node first and play then
+    // unpaused the player.
     const ops = []
     if (typeof state.volume === 'number') {
       if (typeof newPlayer.setVolume === 'function')
-        ops.push(newPlayer.setVolume(state.volume))
+        ops.push(() => newPlayer.setVolume(state.volume))
       else newPlayer.volume = state.volume
     }
     if (state.filters && newPlayer.filters?.applySnapshot) {
-      ops.push(newPlayer.filters.applySnapshot(state.filters).updateFilters())
+      ops.push(() =>
+        newPlayer.filters.applySnapshot(state.filters).updateFilters()
+      )
     }
     if (state.previousTracks?.length && newPlayer.previousTracks?.push) {
       for (const track of state.previousTracks)
@@ -596,7 +607,7 @@ class AquaRecovery {
       newPlayer.queue.add(...state.queue)
     if (state.current && this.aqua.failoverOptions.preservePosition) {
       if (this.aqua.failoverOptions.resumePlayback) {
-        ops.push(
+        ops.push(() =>
           newPlayer.play(state.current, { oneShot: state.current.oneShot })
         )
         this.seekAfterTrackStart(
@@ -605,14 +616,24 @@ class AquaRecovery {
           state.position,
           50
         )
-        if (state.paused) ops.push(newPlayer.pause(true))
+        if (state.paused) ops.push(() => newPlayer.pause(true))
       } else if (newPlayer.queue?.add) {
         newPlayer.queue.add(state.current)
       }
     }
     newPlayer.loop = state.loop
     newPlayer.shuffle = state.shuffle
-    await Promise.allSettled(ops)
+    for (const op of ops) {
+      try {
+        await op()
+      } catch (error) {
+        reportSuppressedError(this.aqua, 'player.restoreState', error, {
+          guildId: newPlayer.guildId
+        })
+      }
+    }
+    // Every migration and in-place rebuild ends here.
+    this._checkVoiceAfterMove(newPlayer)
   }
 
   async loadPlayers(filePath = './AquaPlayers.jsonl') {
@@ -1047,7 +1068,51 @@ class AquaRecovery {
     }
     player.restored = info
     this.aqua.emit(AqualinkEvents.PlayerRestored, player, info)
+    this._checkVoiceAfterMove(player)
     return info
+  }
+
+  // A restored or migrated player whose voice update was lost sits on the
+  // node silent and unconnected, with nothing left to send it again. Ask the
+  // node, re-send once, and report the player if that does not connect it.
+  _checkVoiceAfterMove(player, resent = false) {
+    const gId = player.guildId
+    const timer = setTimeout(async () => {
+      const current = () =>
+        !player.destroyed && this.aqua?.players.get(gId) === player
+      if (!current() || !player.voiceChannel || player.connected) return
+      const node = player.nodes
+      let remote
+      try {
+        remote = await node.rest.getPlayer(gId)
+      } catch (error) {
+        reportSuppressedError(this.aqua, 'player.voiceCheck', error, {
+          guildId: gId,
+          node: node?.name
+        })
+        return
+      }
+      if (!current() || remote?.state?.connected) return
+      if (!resent && player.connection?.resendVoiceUpdate(true)) {
+        if (this.aqua.debugTrace) {
+          this.aqua._trace('player.voiceResend', {
+            guildId: gId,
+            node: node?.name
+          })
+        }
+        player.connection.flushVoiceUpdate()
+        this._checkVoiceAfterMove(player, true)
+        return
+      }
+      emitOperationalError(
+        this.aqua,
+        null,
+        new Error(
+          `Player for guild ${gId} has no voice connection on node ${node?.name || node?.host} after moving there`
+        )
+      )
+    }, RESTORE_VOICE_CHECK_MS)
+    timer.unref?.()
   }
 
   async waitForFirstNode(timeout = this.NODE_TIMEOUT) {
@@ -1199,6 +1264,10 @@ class AquaRecovery {
       return false
     connection._lastVoiceDataUpdate = Date.now()
     connection.resendVoiceUpdate(true)
+    // Now rather than after the flush delay, so it leads this guild's
+    // requests: a play or volume change ahead of it would reach the node
+    // before the player has a voice connection.
+    connection.flushVoiceUpdate()
     return true
   }
 
