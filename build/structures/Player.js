@@ -1497,6 +1497,10 @@ class Player extends EventEmitter {
     return this._lifecycleController.attemptVoiceResume(abortSignal)
   }
 
+  async _freshVoiceRejoin(code, payload) {
+    return this._lifecycleController.freshVoiceRejoin(code, payload)
+  }
+
   async socketClosed(_player, _track, payload) {
     return this._lifecycleController.socketClosed(_player, _track, payload)
   }

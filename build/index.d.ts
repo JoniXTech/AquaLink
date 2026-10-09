@@ -560,6 +560,7 @@ declare module 'aqualink' {
     _handleEvent(payload: Record<string, unknown>): Promise<void>
     _voiceWatchdog(): Promise<void>
     _attemptVoiceResume(): Promise<void>
+    _freshVoiceRejoin(code: number, payload?: Record<string, unknown> | null): Promise<void>
     _getAutoplayTrack(
       sourceName: string,
       identifier: string,
