@@ -993,11 +993,6 @@ class Node {
         await Promise.allSettled(
           batch.map(async ({ guildId, player }) => {
             try {
-              const recoveryToken = player._claimVoiceRecovery?.(
-                resumeSupported
-                  ? 'node_resume_rejoin'
-                  : 'node_rejoin_after_resume_404'
-              )
               this._emitDebug(`Rejoining voice for guild ${guildId} on resume`)
               if (this.aqua?.debugTrace) {
                 this.aqua._trace('node.resume.rejoin', {
@@ -1007,12 +1002,11 @@ class Node {
                   resumeSupported
                 })
               }
-              if (player._isVoiceRecoveryActive?.(recoveryToken))
-                player.connect({
-                  voiceChannel: player.voiceChannel,
-                  deaf: player.deaf,
-                  mute: player.mute
-                })
+              player.connect({
+                voiceChannel: player.voiceChannel,
+                deaf: player.deaf,
+                mute: player.mute
+              })
             } catch (e) {
               this._emitDebug(
                 `Failed to rejoin voice for ${guildId}: ${e?.message || e}`

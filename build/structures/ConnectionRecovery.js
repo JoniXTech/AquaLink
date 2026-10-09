@@ -281,15 +281,14 @@ class ConnectionRecovery {
     }
 
     try {
-      const recoveryToken = conn._player._claimVoiceRecovery?.(
-        'missing_player_recover'
-      )
       if (isSessionError && conn._player?.nodes?._clearSession) {
         conn._player.nodes._clearSession()
       }
 
-      if (conn._player?._isVoiceRecoveryActive?.(recoveryToken))
-        conn._requestVoiceState()
+      conn._requestVoiceState()
+      // Anything that moved the voice on while the resume was out (a new
+      // join, new credentials) supersedes the re-send below.
+      const generation = conn.generation
       const resumed = await this.attemptResume().catch((error) => {
         reportSuppressedError(
           conn._aqua,
@@ -301,12 +300,7 @@ class ConnectionRecovery {
         )
         return false
       })
-      if (resumed) {
-        conn._player?._clearVoiceRecovery?.(
-          recoveryToken,
-          'missing_player_resumed'
-        )
-      } else if (conn._player?._isVoiceRecoveryActive?.(recoveryToken)) {
+      if (!resumed && conn.generation === generation) {
         conn.resendVoiceUpdate(true)
       }
 

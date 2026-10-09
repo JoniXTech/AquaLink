@@ -358,7 +358,6 @@ declare module 'aqualink' {
     deaf: boolean
     mute: boolean
     autoplayRetries: number
-    reconnectionRetries: number
     /** Set by a restore; null on a player created any other way. */
     restored: RestoreInfo | null
     _resuming: boolean
@@ -375,8 +374,6 @@ declare module 'aqualink' {
     crossfade: CrossfadeConfig | null
     ducking: boolean
     loudnessNormalizer: boolean
-    _voiceDownSince: number
-    _voiceRecovering: boolean
     _voiceWatchdogTimer: NodeJS.Timer | null
     _boundPlayerUpdate: (packet: Record<string, unknown>) => void
     _boundEvent: (payload: Record<string, unknown>) => void
@@ -560,7 +557,6 @@ declare module 'aqualink' {
     _handlePlayerUpdate(packet: Record<string, unknown>): void
     _handleEvent(payload: Record<string, unknown>): Promise<void>
     _voiceWatchdog(): Promise<void>
-    _attemptVoiceResume(): Promise<void>
     _armVoiceDeadline(ms?: number, ifNone?: boolean): void
     _getAutoplayTrack(
       sourceName: string,

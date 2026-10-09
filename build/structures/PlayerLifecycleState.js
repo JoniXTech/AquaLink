@@ -17,21 +17,13 @@ function attachPlayerLifecycleState(player, options = {}) {
     enumerable: false,
     writable: false,
     value: {
-      voiceRecovering: false,
       reconnecting: false,
-      activelyReconnecting: false,
       resuming: !!options.resuming,
       deferredStart: false
     }
   })
 
-  defineLifecycleAccessor(player, '_voiceRecovering', 'voiceRecovering')
   defineLifecycleAccessor(player, '_reconnecting', 'reconnecting')
-  defineLifecycleAccessor(
-    player,
-    '_isActivelyReconnecting',
-    'activelyReconnecting'
-  )
   defineLifecycleAccessor(player, '_resuming', 'resuming')
   defineLifecycleAccessor(player, '_deferredStart', 'deferredStart')
   return player._lifecycle
