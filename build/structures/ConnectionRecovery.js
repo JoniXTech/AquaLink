@@ -396,8 +396,11 @@ class ConnectionRecovery {
         }
         throw error
       }
-      if (!this._functions.isNetworkError(error)) {
-        conn._aqua.emit(
+      if (
+        !this._functions.isNetworkError(error) &&
+        error?.code !== 'NODE_LINK_DROPPED'
+      ) {
+        conn._aqua?.emit(
           AqualinkEvents.Debug,
           new Error(`Voice update failed: ${error?.message || error}`)
         )

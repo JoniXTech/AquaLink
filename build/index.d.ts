@@ -271,6 +271,11 @@ declare module 'aqualink' {
     infiniteReconnects: boolean
     connected: boolean
     readonly isUsable: boolean
+    /**
+     * The socket broke (1006) and is being reconnected within
+     * `failoverOptions.linkGraceMs`; its players stay on it meanwhile.
+     */
+    readonly inLinkGrace: boolean
     info: NodeInfo | null
     isNodelink: boolean
     /** Whether the last ready resumed the session instead of opening one. */
@@ -317,6 +322,9 @@ declare module 'aqualink' {
     _handleClose(code: number, reason: string | unknown): void
     _handleReady(payload: Record<string, unknown>): Promise<void>
     _resumePlayers(): Promise<void>
+    _holdLink(): boolean
+    _moveLinkPlayers(reason?: string): void
+    _scheduleLinkRetry(): void
     _emitError(error: Error | unknown): void
     _emitDebug(message: string | (() => string)): void
   }
@@ -1137,6 +1145,22 @@ declare module 'aqualink' {
     resumePlayback?: boolean
     cooldownTime?: number
     maxFailoverAttempts?: number
+    /**
+     * How long a node whose socket broke (1006, or no heartbeat) keeps its
+     * players while it is reconnected, in ms. Default 5000; 0 moves them at
+     * once. An HTTP answer to the reconnect (502, 404, ...) moves them at
+     * once too.
+     */
+    linkGraceMs?: number
+  }
+
+  export interface NodeLinkRestoredData {
+    /** From the close to the resumed ready. */
+    downMs: number
+    /** Players on the node when the link came back. */
+    players: number
+    /** Of those, how many the node no longer had; they are rebuilt. */
+    missing: number
   }
 
   /** The WebSocket listeners a Node binds once and reuses. */
@@ -1858,8 +1882,15 @@ declare module 'aqualink' {
      * channel to join it again (see `Player.voiceRejoining`).
      * 'worker_failed': the node lost the player (a NodeLink cluster worker
      * died); it is rebuilt on the node and joins voice fresh.
+     * 'player_missing': the node's link came back but it no longer had the
+     * player; rebuilt the same way.
      */
-    reason?: 'socket_closed' | 'voice_deadline' | 'leave_rejoin' | 'worker_failed'
+    reason?:
+      | 'socket_closed'
+      | 'voice_deadline'
+      | 'leave_rejoin'
+      | 'worker_failed'
+      | 'player_missing'
   }
 
   export interface RestoreInfo {
@@ -2145,7 +2176,10 @@ declare module 'aqualink' {
     nodeCreate: (node: Node) => void
     nodeDestroy: (node: Node) => void
     nodeReady: (node: Node, data: Record<string, unknown>) => void
+    /** Emitted only when players are actually being moved off the node. */
     nodeFailover: (node: Node) => void
+    /** The node's link came back inside its grace; nothing was moved. */
+    nodeLinkRestored: (node: Node, data: NodeLinkRestoredData) => void
     nodeFailoverComplete: (
       node: Node,
       successful: number,
@@ -2349,6 +2383,7 @@ declare module 'aqualink' {
     readonly NodeCustomOp: 'nodeCustomOp'
     readonly NodeFailover: 'nodeFailover'
     readonly NodeFailoverComplete: 'nodeFailoverComplete'
+    readonly NodeLinkRestored: 'nodeLinkRestored'
     readonly Debug: 'debug'
     readonly Error: 'error'
     readonly PlayerCreate: 'playerCreate'

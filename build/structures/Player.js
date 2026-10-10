@@ -155,6 +155,9 @@ class MicrotaskUpdateBatcher {
     return p.updatePlayer(u).then(
       () => true,
       (err) => {
+        // Held while the node's link was down; the player moved and took
+        // this change with it.
+        if (err?.code === 'NODE_LINK_DROPPED') return false
         _functions.emitAquaError(
           p.aqua,
           new Error(`Update error: ${err.message}`)
@@ -872,7 +875,9 @@ class Player extends EventEmitter {
         } else {
           this._queueLeave()
           this.aqua?.destroyPlayer?.(this.guildId)
-          if (this.nodes?.isUsable)
+          // During a link grace the DELETE waits with the guild's other
+          // requests: the node is still playing this player.
+          if (this.nodes?.isUsable || this.nodes?.inLinkGrace)
             this.nodes.rest
               ?.destroyPlayer(this.guildId, abortSignal)
               .catch((error) => {

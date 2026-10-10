@@ -91,7 +91,10 @@ const DEFAULT_OPTIONS = Object.freeze({
     preservePosition: true,
     resumePlayback: true,
     cooldownTime: 5000,
-    maxFailoverAttempts: 5
+    maxFailoverAttempts: 5,
+    // How long a node whose socket broke (1006) keeps its players while it
+    // is reconnected. 0 moves them at once.
+    linkGraceMs: 5000
   }),
   maxQueueSave: 10,
   persistTracks: 'uri',

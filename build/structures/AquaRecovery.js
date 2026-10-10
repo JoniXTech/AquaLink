@@ -269,7 +269,6 @@ class AquaRecovery {
     state.attempts++
 
     try {
-      this.aqua.emit(AqualinkEvents.NodeFailover, failedNode)
       const players = Array.from(failedNode.players || [])
       if (!players.length) return
       const available = []
@@ -277,6 +276,9 @@ class AquaRecovery {
         if (node !== failedNode && node.isUsable) available.push(node)
       }
       if (!available.length) throw new Error('No failover nodes')
+      // Only when players are actually moving; a node that dropped with
+      // nothing on it, or nowhere to go, has nodeDisconnect for that.
+      this.aqua.emit(AqualinkEvents.NodeFailover, failedNode)
       const results = await this.migratePlayersOptimized(players, available)
       const successful = results.filter((r) => r.success).length
       if (successful) {

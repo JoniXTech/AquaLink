@@ -69,6 +69,14 @@ const PLAYER_RETRY_ATTEMPTS = 3
 const PLAYER_RETRY_MAX_WAIT = 15000
 const PLAYER_RETRY_JITTER = 250
 
+const linkDropped = () => {
+  const err = new Error(
+    'Request dropped: the node link went down and the player moved'
+  )
+  err.code = 'NODE_LINK_DROPPED'
+  return err
+}
+
 const ERRORS = Object.freeze({
   NO_SESSION: new Error('Session ID required'),
   INVALID_TRACK: new Error('Invalid encoded track format'),
@@ -476,10 +484,23 @@ class Rest {
 
   _inGuildOrder(guildId, task) {
     const queues = this._guildQueues
-    const result = (queues.get(guildId) || Promise.resolve()).then(() => {
-      if (this._destroyed) throw new Error('Rest destroyed')
-      return task()
-    })
+    // Taken now as well: a request queued behind a held one gets its turn
+    // after the hold is settled and cleared, and is subject to it all the same.
+    const heldAtQueue = this.node?._linkGate?.promise
+    const result = (queues.get(guildId) || Promise.resolve()).then(
+      async () => {
+        if (this._destroyed) throw new Error('Rest destroyed')
+        // The node's link is down (Node#_holdLink). Sent in order once it
+        // is back; dropped if the player moved off it meanwhile.
+        const hold = this.node?._linkGate?.promise || heldAtQueue
+        if (hold) {
+          const send = await hold
+          if (this._destroyed) throw new Error('Rest destroyed')
+          if (!send(guildId)) throw linkDropped()
+        }
+        return task()
+      }
+    )
     const tail = result.then(
       () => {},
       () => {}
