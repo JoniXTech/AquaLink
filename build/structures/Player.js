@@ -1330,7 +1330,9 @@ class Player extends EventEmitter {
     if (!startedTrack) return
     if (!this.current) this.current = startedTrack
     this.playing = true
-    this.paused = false
+    // `paused` is left alone: a track sent with `paused: true` (a recreated
+    // or adopted paused player) still starts, and NodeLink holds it after
+    // the TrackStart. Every play() and pause() sets the flag to what it sends.
     // During an adopted player's voice handover, NodeLink re-sends
     // TrackStart for a stream that survived the reconnect. That one is
     // flagged resumed; the first start of a track is new, even here.

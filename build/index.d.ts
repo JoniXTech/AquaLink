@@ -1148,8 +1148,8 @@ declare module 'aqualink' {
     /**
      * How long a node whose socket broke (1006, or no heartbeat) keeps its
      * players while it is reconnected, in ms. Default 5000; 0 moves them at
-     * once. An HTTP answer to the reconnect (502, 404, ...) moves them at
-     * once too.
+     * once. An HTTP answer to the reconnect (502, 404, ...) moves them when
+     * another comes at least 1 s after the first.
      */
     linkGraceMs?: number
   }
