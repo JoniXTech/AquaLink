@@ -49,7 +49,11 @@ const DEFAULT_NODE_HEALTH = Object.freeze({
   maxCpuLoad: 0.9,
   maxMemoryUsage: 0.95,
   warnCpuLoad: 0.75,
-  warnMemoryUsage: 0.85
+  warnMemoryUsage: 0.85,
+  // REST requests in a row the node did not answer before it counts as
+  // critical, and how long that lasts after the last failure.
+  maxRestFailures: 3,
+  restFailureWindow: 60000
 })
 const NODE_TIMEOUT = 30000
 const MAX_CACHE_SIZE = 20
@@ -755,12 +759,17 @@ class Aqua extends EventEmitter {
     const stats = node.stats
     const reasons = []
 
+    // A node whose REST keeps failing cannot serve players, however healthy
+    // its WebSocket and stats look.
+    const restRun = this._restFailureRun(node)
+    const restReason = restRun ? `rest failing: ${restRun} in a row` : null
+
     if (!stats || !node.statsUpdatedAt) {
       // Never reported. Deliberately not 'critical': a node that has only
       // just connected has no stats yet, and gating it out would idle it
       // until its first frame -- 30s on NodeLink.
       return {
-        status: 'unknown',
+        status: restRun ? 'critical' : 'unknown',
         score: this.scoreNode(node),
         cpuLoad: null,
         processLoad: null,
@@ -769,7 +778,9 @@ class Aqua extends EventEmitter {
         playingPlayers: 0,
         ping: 0,
         statsAge: null,
-        reasons: ['no stats received yet']
+        reasons: restReason
+          ? [restReason, 'no stats received yet']
+          : ['no stats received yet']
       }
     }
 
@@ -798,6 +809,11 @@ class Aqua extends EventEmitter {
       }
     }
 
+    if (restRun) {
+      status = 'critical'
+      reasons.push(restReason)
+    }
+
     return {
       status,
       score: this.scoreNode(node),
@@ -810,6 +826,16 @@ class Aqua extends EventEmitter {
       statsAge: Date.now() - node.statsUpdatedAt,
       reasons
     }
+  }
+
+  // The current run of REST failures, or 0 when it is too short or too old.
+  _restFailureRun(node) {
+    const run = node.restFailures || 0
+    const limits = this.nodeHealth
+    if (run < limits.maxRestFailures) return 0
+    if (Date.now() - (node.restFailureAt || 0) > limits.restFailureWindow)
+      return 0
+    return run
   }
 
   _resolveNodes(ctx) {

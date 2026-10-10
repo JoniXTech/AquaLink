@@ -275,6 +275,9 @@ declare module 'aqualink' {
     stats: NodeStats
     /** `Date.now()` of the last stats frame, 0 if none has arrived. */
     statsUpdatedAt: number
+    /** REST requests in a row this node did not answer (no response or 5xx). */
+    restFailures: number
+    restFailureAt: number
     readonly score: number
     readonly health: NodeHealth | null
     /** Operator preference. Higher is less preferred; 0 is neutral. */
@@ -358,7 +361,6 @@ declare module 'aqualink' {
     deaf: boolean
     mute: boolean
     autoplayRetries: number
-    reconnectionRetries: number
     /** Set by a restore; null on a player created any other way. */
     restored: RestoreInfo | null
     _resuming: boolean
@@ -375,8 +377,6 @@ declare module 'aqualink' {
     crossfade: CrossfadeConfig | null
     ducking: boolean
     loudnessNormalizer: boolean
-    _voiceDownSince: number
-    _voiceRecovering: boolean
     _voiceWatchdogTimer: NodeJS.Timer | null
     _boundPlayerUpdate: (packet: Record<string, unknown>) => void
     _boundEvent: (payload: Record<string, unknown>) => void
@@ -560,7 +560,6 @@ declare module 'aqualink' {
     _handlePlayerUpdate(packet: Record<string, unknown>): void
     _handleEvent(payload: Record<string, unknown>): Promise<void>
     _voiceWatchdog(): Promise<void>
-    _attemptVoiceResume(): Promise<void>
     _armVoiceDeadline(ms?: number, ifNone?: boolean): void
     _getAutoplayTrack(
       sourceName: string,
@@ -927,6 +926,8 @@ declare module 'aqualink' {
     token: string | null
     region: string | null
     sequence: number
+    /** Which voice attempt is current. */
+    generation: number
 
     // Internal Properties
     _player: Player
@@ -940,7 +941,9 @@ declare module 'aqualink' {
     _hasDebugListeners: boolean
     _hasMoveListeners: boolean
     _lastSentVoiceKey: string
+    _voiceInFlightKey: string
     _lastVoiceDataUpdate: number
+    _voiceChangedAt: number
     _stateFlags: number
     _regionMigrationAttempted: boolean
 
@@ -960,8 +963,8 @@ declare module 'aqualink' {
     _executeVoiceUpdate(): Promise<boolean>
     _sendUpdate(payload: Record<string, unknown>): Promise<void>
     _prepareFreshVoiceJoin(): boolean
-    _markGatewayVoice(): void
-    _isTransient4006(): boolean
+    _bumpGeneration(reason: string): void
+    _markVoicePatch(): void
     _handleDisconnect(): void
     _clearPendingUpdate(): void
     _checkRegionMigration(): void
@@ -1770,6 +1773,43 @@ declare module 'aqualink' {
     | 'ended' // it ended with nothing after it: the player idles
     | 'idle' // nothing played when saved, nothing plays now
 
+  /** Why aqualink ended the player. Stable: hosts may key on it. */
+  export type VoiceCloseCause =
+    | 'no_channel'
+    | 'disconnected'
+    | 'rejoins_exhausted'
+    | 'voice_deadline'
+
+  /** A voice close, or (with `timeout`) a voice that never came up. */
+  export interface VoiceClosePayload {
+    op?: 'event'
+    type?: 'WebSocketClosedEvent'
+    guildId: string
+    /** Discord's close code; null when the voice deadline gave up. */
+    code: number | null
+    reason: string
+    byRemote: boolean
+    timeout?: true
+    cause: VoiceCloseCause
+  }
+
+  export interface ReconnectionFailedData {
+    code: number | null
+    error: Error
+    fresh: true
+    payload: VoiceClosePayload
+    reason: 'voice_deadline' | 'rejoins_exhausted'
+    retriesLeft: 0
+  }
+
+  export interface PlayerReconnectData {
+    /** True for the node's own reconnect (PlayerReconnectingEvent). */
+    resuming: boolean
+    fresh?: true
+    code?: number | null
+    reason?: 'socket_closed' | 'voice_deadline'
+  }
+
   export interface RestoreInfo {
     /** The player the node kept through the restart was taken over. */
     adopted: boolean
@@ -2008,6 +2048,10 @@ declare module 'aqualink' {
     maxMemoryUsage?: number
     warnCpuLoad?: number
     warnMemoryUsage?: number
+    /** REST requests in a row the node did not answer before it is critical. Default 3. */
+    maxRestFailures?: number
+    /** How long a run of REST failures keeps the node critical, in ms. Default 60000. */
+    restFailureWindow?: number
   }
 
   export interface EjectResult {
@@ -2065,7 +2109,9 @@ declare module 'aqualink' {
       reason: MigrationReason
     ) => void
     playerRestored: (player: Player, info: RestoreInfo) => void
+    /** No longer emitted: a failed voice now rejoins the same player. */
     playerReconnected: (player: Player, data: Record<string, unknown>) => void
+    playerReconnect: (player: Player, data: PlayerReconnectData) => void
     trackStart: (player: Player, track: Track) => void
     trackEnd: (player: Player, track: Track, reason?: string) => void
     trackError: (player: Player, track: Track, error: Error | unknown) => void
@@ -2079,8 +2125,8 @@ declare module 'aqualink' {
     queueEnd: (player: Player, track: Track | null) => void
     playerMove: (oldChannel: string, newChannel: string) => void
     playersRebuilt: (node: Node, count: number) => void
-    reconnectionFailed: (player: Player, data: Record<string, unknown>) => void
-    socketClosed: (player: Player, payload: Record<string, unknown>) => void
+    reconnectionFailed: (player: Player, data: ReconnectionFailedData) => void
+    socketClosed: (player: Player, payload: VoiceClosePayload) => void
     lyricsLine: (
       player: Player,
       track: Track,
@@ -2238,6 +2284,7 @@ declare module 'aqualink' {
     readonly PlayerUpdate: 'playerUpdate'
     readonly PlayerMove: 'playerMove'
     readonly PlayerReconnected: 'playerReconnected'
+    readonly PlayerReconnect: 'playerReconnect'
     readonly AutoplayFailed: 'autoplayFailed'
     readonly ReconnectionFailed: 'reconnectionFailed'
     readonly NodeConnect: 'nodeConnect'

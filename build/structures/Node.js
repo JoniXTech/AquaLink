@@ -210,6 +210,10 @@ class Node {
     // 0 until the first stats frame, so a node that has never reported is
     // scored as an unknown rather than as an idle one.
     this.statsUpdatedAt = 0
+    // REST requests in a row the node did not answer, and when the last one
+    // failed. Read by Aqua#getNodeHealth.
+    this.restFailures = 0
+    this.restFailureAt = 0
 
     this._clientName = `Aqua/${this.aqua.version} https://github.com/ToddyTheNoobDud/AquaLink`
     this._headers = this._buildHeaders()
@@ -339,6 +343,23 @@ class Node {
 
   _emitToPlayer(eventName, payload) {
     const player = this._getPlayer(payload?.guildId)
+    // A voice close from a node the player has moved off is about a
+    // connection that no longer matters, and can land after the new
+    // node's voice is up.
+    if (
+      player?.nodes &&
+      player.nodes !== this &&
+      payload?.type === 'WebSocketClosedEvent'
+    ) {
+      if (this.aqua?.debugTrace) {
+        this.aqua._trace('player.socketClosed.foreignNode', {
+          guildId: player.guildId,
+          node: this.name,
+          code: payload.code
+        })
+      }
+      return
+    }
     if (!player?.emit) {
       if (eventName === 'event')
         this._adoptHolds?.get(String(payload?.guildId))?.push(payload)
@@ -976,11 +997,6 @@ class Node {
         await Promise.allSettled(
           batch.map(async ({ guildId, player }) => {
             try {
-              const recoveryToken = player._claimVoiceRecovery?.(
-                resumeSupported
-                  ? 'node_resume_rejoin'
-                  : 'node_rejoin_after_resume_404'
-              )
               this._emitDebug(`Rejoining voice for guild ${guildId} on resume`)
               if (this.aqua?.debugTrace) {
                 this.aqua._trace('node.resume.rejoin', {
@@ -990,12 +1006,11 @@ class Node {
                   resumeSupported
                 })
               }
-              if (player._isVoiceRecoveryActive?.(recoveryToken))
-                player.connect({
-                  voiceChannel: player.voiceChannel,
-                  deaf: player.deaf,
-                  mute: player.mute
-                })
+              player.connect({
+                voiceChannel: player.voiceChannel,
+                deaf: player.deaf,
+                mute: player.mute
+              })
             } catch (e) {
               this._emitDebug(
                 `Failed to rejoin voice for ${guildId}: ${e?.message || e}`

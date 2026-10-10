@@ -41,17 +41,8 @@ const EVENT_HANDLERS = Object.freeze({
 })
 
 const WATCHDOG_INTERVAL = 15000
-const VOICE_DOWN_THRESHOLD = 10000
-const VOICE_ABANDON_MULTIPLIER = 12
-const RECONNECT_MAX = 15
-const MUTE_TOGGLE_DELAY = 300
-const SEEK_DELAY = 800
-const PAUSE_DELAY = 1200
 const VOICE_TRACE_INTERVAL = 15000
 const PLAYER_UPDATE_SILENCE_THRESHOLD = 45000
-const VOICE_FORCE_DESTROY_MS = 15 * 60 * 1000
-const RETRY_BACKOFF_BASE = 1500
-const RETRY_BACKOFF_MAX = 5000
 const PREVIOUS_TRACKS_SIZE = 50
 const PREVIOUS_IDS_MAX = 20
 // Upper bound on an adopted player's voice handover; see _beginAdoptGuard.
@@ -254,13 +245,10 @@ class Player extends EventEmitter {
     this.position = this.timestamp = this.ping = 0
     this.deaf = options.deaf !== false
     this.mute = !!options.mute
-    this.autoplayRetries = this.reconnectionRetries = 0
-    this._voiceDownSince = 0
+    this.autoplayRetries = 0
     attachPlayerLifecycleState(this, { resuming: !!options.resuming })
     this._voiceWatchdogTimer = null
     this._pendingTimers = new Set()
-    this._reconnectTimers = null
-    this._reconnectNonce = 0
     this._dataStore = null
     this.fading = null
     this.crossfade = null
@@ -287,26 +275,13 @@ class Player extends EventEmitter {
       _functions,
       PLAYER_STATE,
       VOICE_TRACE_INTERVAL,
-      PLAYER_UPDATE_SILENCE_THRESHOLD,
-      VOICE_DOWN_THRESHOLD,
-      VOICE_ABANDON_MULTIPLIER,
-      VOICE_FORCE_DESTROY_MS,
-      RECONNECT_MAX,
-      MUTE_TOGGLE_DELAY,
-      SEEK_DELAY,
-      PAUSE_DELAY,
-      RETRY_BACKOFF_BASE,
-      RETRY_BACKOFF_MAX
+      PLAYER_UPDATE_SILENCE_THRESHOLD
     })
 
     this._voiceRequestAt = 0
     this._voiceRequestChannel = null
-    this._suppressResumeUntil = 0
     this._lastVoiceUpTraceAt = 0
     this._lastPlayerUpdateAt = Date.now()
-    this._voiceRecoverySeq = 0
-    this._activeVoiceRecoveryToken = 0
-    this._voiceRecoveryReason = null
     this._bindEvents()
     this._startWatchdog()
   }
@@ -343,26 +318,6 @@ class Player extends EventEmitter {
     return new Promise((r) => this._createTimer(r, ms))
   }
 
-  _claimVoiceRecovery(reason = 'unknown') {
-    const token = ++this._voiceRecoverySeq
-    this._activeVoiceRecoveryToken = token
-    this._voiceRecoveryReason = reason
-    return token
-  }
-
-  _isVoiceRecoveryActive(token) {
-    return (
-      !!token && !this.destroyed && this._activeVoiceRecoveryToken === token
-    )
-  }
-
-  _clearVoiceRecovery(token = this._activeVoiceRecoveryToken, reason = null) {
-    if (!token || this._activeVoiceRecoveryToken !== token) return false
-    this._activeVoiceRecoveryToken = 0
-    this._voiceRecoveryReason = reason
-    return true
-  }
-
   // A restore adopted the node's player, which is still streaming. Until
   // its voice has moved to this process's gateway session, parts of the
   // normal recovery would treat that move as a failure. It ends once the
@@ -372,6 +327,7 @@ class Player extends EventEmitter {
   // `streaming` is the track the node is playing on the old connection.
   _beginAdoptGuard(displaced = null, streaming = null) {
     this._endAdoptGuard()
+    this.connection?._bumpGeneration?.('adopt')
     const guard = { sent: false, streaming, displaced, timer: null }
     guard.timer = this._createTimer(() => {
       if (this._adoptGuard === guard) this._endAdoptGuard('timeout')
@@ -604,12 +560,10 @@ class Player extends EventEmitter {
           this.aqua._trace('player.play.unresolved', {
             guildId: this.guildId,
             reconnecting: !!this._reconnecting,
-            resuming: !!this._resuming,
-            voiceRecovering: !!this._voiceRecovering
+            resuming: !!this._resuming
           })
         }
-        if (this._reconnecting || this._resuming || this._voiceRecovering)
-          return this
+        if (this._reconnecting || this._resuming) return this
         throw new Error('Failed to resolve track')
       }
 
@@ -634,11 +588,9 @@ class Player extends EventEmitter {
       if (
         this.voiceChannel &&
         !this.connected &&
-        !this._reconnecting &&
-        !this._voiceRecovering
+        !this._reconnecting
       ) {
         this._deferredStart = true
-        const recoveryToken = this._claimVoiceRecovery('play_deferred')
         if (this.aqua?.debugTrace) {
           this.aqua._trace('player.play.deferred', {
             guildId: this.guildId,
@@ -646,24 +598,18 @@ class Player extends EventEmitter {
           })
         }
         const now = Date.now()
-        if (
-          now - (this._voiceRequestAt || 0) >= 1200 &&
-          this._isVoiceRecoveryActive(recoveryToken)
-        ) {
+        if (now - (this._voiceRequestAt || 0) >= 1200) {
           this._voiceRequestAt = now
-          if (this._isVoiceRecoveryActive(recoveryToken))
-            this.connection?._requestVoiceState?.()
-          if (this._isVoiceRecoveryActive(recoveryToken))
-            this.connection?.resendVoiceUpdate?.(true)
-          if (this._isVoiceRecoveryActive(recoveryToken))
-            _functions.safeCall(() =>
-              this.connect({
-                guildId: this.guildId,
-                voiceChannel: this.voiceChannel,
-                deaf: this.deaf,
-                mute: this.mute
-              })
-            )
+          this.connection?._requestVoiceState?.()
+          this.connection?.resendVoiceUpdate?.(true)
+          _functions.safeCall(() =>
+            this.connect({
+              guildId: this.guildId,
+              voiceChannel: this.voiceChannel,
+              deaf: this.deaf,
+              mute: this.mute
+            })
+          )
         }
         return this
       }
@@ -699,8 +645,7 @@ class Player extends EventEmitter {
       if (
         !this.destroyed &&
         !this._reconnecting &&
-        !this._resuming &&
-        !this._voiceRecovering
+        !this._resuming
       ) {
         _functions.emitAquaError(this.aqua, error)
       }
@@ -708,8 +653,7 @@ class Player extends EventEmitter {
         this.queue?.size &&
         !track &&
         !this._reconnecting &&
-        !this._resuming &&
-        !this._voiceRecovering
+        !this._resuming
       )
         return this.play()
     }
@@ -734,7 +678,6 @@ class Player extends EventEmitter {
     this._voiceRequestChannel = voiceChannel
 
     this.voiceChannel = voiceChannel
-    this._voiceDownSince = 0
     this._armVoiceDeadline()
     this.send({
       guild_id: this.guildId,
@@ -754,26 +697,8 @@ class Player extends EventEmitter {
     return this
   }
 
-  _shouldAttemptVoiceRecovery() {
-    if (
-      this.nodes?.info?.isNodelink ||
-      this.destroyed ||
-      !this.voiceChannel ||
-      this.connected ||
-      this._reconnecting ||
-      this._voiceRecovering
-    )
-      return false
-    if (
-      !this._voiceDownSince ||
-      Date.now() - this._voiceDownSince < VOICE_DOWN_THRESHOLD
-    )
-      return false
-    return this.reconnectionRetries < RECONNECT_MAX
-  }
-
-  async _voiceWatchdog() {
-    return this._lifecycleController.voiceWatchdog()
+  _voiceWatchdog() {
+    this._lifecycleController?.voiceWatchdog()
   }
 
   destroy(options = {}) {
@@ -788,9 +713,7 @@ class Player extends EventEmitter {
       abortSignal = null
     } = options
 
-    this._reconnectNonce++
     this.destroyed = true
-    this._clearVoiceRecovery(undefined, 'destroyed')
     if (this.aqua?.debugTrace) {
       this.aqua._trace('player.destroy', {
         guildId: this.guildId,
@@ -809,20 +732,14 @@ class Player extends EventEmitter {
     _functions.clearTimers(this._pendingTimers)
     this._pendingTimers = null
 
-    if (this._reconnectTimers) {
-      _functions.clearTimers(this._reconnectTimers)
-      this._reconnectTimers = null
-    }
-
     this.connected = this.playing = this.paused = this.isAutoplay = false
     this._deferredStart = false
     this.state = PLAYER_STATE.DESTROYED
-    this.autoplayRetries = this.reconnectionRetries = 0
+    this.autoplayRetries = 0
     if (!preserveReconnecting) this._reconnecting = false
     this._lastVoiceChannel = this.voiceChannel
     this._lastTextChannel = this.textChannel
     this.voiceChannel = null
-    this._isActivelyReconnecting = false
 
     if (
       this.shouldDeleteMessage &&
@@ -1494,12 +1411,8 @@ class Player extends EventEmitter {
     this.aqua.emit(AqualinkEvents.PlayerReconnect, this, { resuming: true })
   }
 
-  async _attemptVoiceResume(abortSignal) {
-    return this._lifecycleController.attemptVoiceResume(abortSignal)
-  }
-
-  _armVoiceDeadline(ms, ifNone = false) {
-    this._lifecycleController?.armVoiceDeadline(ms, ifNone)
+  _armVoiceDeadline(ms, ifNone = false, check = false) {
+    this._lifecycleController?.armVoiceDeadline(ms, ifNone, check)
   }
 
   async socketClosed(_player, _track, payload) {
@@ -1507,6 +1420,7 @@ class Player extends EventEmitter {
   }
 
   send(data) {
+    this.connection?._bumpGeneration?.('gateway_voice_state')
     try {
       if (this.aqua?.queueVoiceStateUpdate) {
         return this.aqua.queueVoiceStateUpdate(data)

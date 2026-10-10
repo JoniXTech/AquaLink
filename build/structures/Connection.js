@@ -10,9 +10,6 @@ const MAX_RECONNECT_ATTEMPTS = 3
 const RESUME_BACKOFF_MAX = 60000
 
 const VOICE_DATA_TIMEOUT = 90000
-// How long after Discord hands over new voice credentials a 4006 is still
-// taken for the old session closing (see _isTransient4006).
-const TRANSIENT_4006_MS = 10000
 
 const VOICE_FLUSH_DELAY = 50
 
@@ -153,14 +150,14 @@ class Connection {
     this._reconnectTimer = null
     this._lastVoiceDataUpdate = 0
     this._consecutiveFailures = 0
-    // When Discord last changed the voice credentials. 0 when they came
-    // from somewhere else (a migration, restore or rebuild carried them over).
-    this._gatewayVoiceAt = 0
-    this._transient4006Used = false
+    // Which voice attempt is current, and when the voice last changed.
+    this.generation = 0
+    this._voiceChangedAt = 0
 
     this._voiceFlushTimer = null
     this._pendingUpdate = null
     this._lastSentVoiceKey = ''
+    this._voiceInFlightKey = ''
 
     this._nullChannelTimer = null
     this.isWaitingForDisconnect = false
@@ -206,8 +203,6 @@ class Connection {
     this._lastEndpoint = null
     this._lastVoiceDataUpdate = 0
     this._lastSentVoiceKey = ''
-    this._gatewayVoiceAt = 0
-    this._transient4006Used = false
     this._lastStateReqAt = 0
     this._reconnectAttempts = 0
     this._consecutiveFailures = 0
@@ -242,26 +237,25 @@ class Connection {
     return this._recovery.setServerUpdate(data)
   }
 
-  _markGatewayVoice() {
-    this._gatewayVoiceAt = Date.now()
-    this._transient4006Used = false
+  // Bumped by every gateway voice state send (op 4), every credential change
+  // from Discord, and every adopt or carried-over set of credentials. A
+  // voice close is matched against it (see PlayerLifecycle.socketClosed).
+  _bumpGeneration(reason) {
+    this.generation++
+    this._voiceChangedAt = Date.now()
+    if (this._aqua?.debugTrace) {
+      this._aqua._trace('connection.generation', {
+        guildId: this._guildId,
+        generation: this.generation,
+        reason
+      })
+    }
   }
 
-  // A 4006 while resuming can be the old voice session closing while the new
-  // one comes up, but only right after Discord handed over new credentials,
-  // and only once for them. Credentials carried over by a migration or
-  // restore that draw a 4006 are dead, and so is a set that draws a second
-  // one: ignoring those left the player silent for good.
-  _isTransient4006() {
-    const at = this._gatewayVoiceAt
-    if (!at || this._transient4006Used) return false
-    if (Date.now() - at > TRANSIENT_4006_MS) return false
-    this._transient4006Used = true
-    return true
-  }
-
-  _checkRegionMigration() {
-    return this._recovery.checkRegionMigration()
+  // A voice PATCH makes the node replace its voice connection, and the old
+  // one's close can arrive after it.
+  _markVoicePatch() {
+    this._voiceChangedAt = Date.now()
   }
 
   resendVoiceUpdate(force = false) {
@@ -332,7 +326,6 @@ class Connection {
     let needsUpdate = wasVoiceDataStale
 
     if (this.voiceChannel !== channelId) {
-      p._reconnecting = true
       p._resuming = true
       this._aqua.emit(
         AqualinkEvents.PlayerMove,
@@ -343,13 +336,13 @@ class Connection {
       this.voiceChannel = channelId
       p.voiceChannel = channelId
       p._armVoiceDeadline?.()
-      this._markGatewayVoice()
+      this._bumpGeneration('voice_state_channel')
       needsUpdate = true
     }
 
     if (this.sessionId !== sessionId) {
       this.sessionId = sessionId
-      this._markGatewayVoice()
+      this._bumpGeneration('voice_state_session')
       this._lastVoiceDataUpdate = Date.now()
       this._stateFlags &= ~STATE.VOICE_DATA_STALE
       this._reconnectAttempts = 0
@@ -559,15 +552,21 @@ class Connection {
     }
 
     const key = this._makeVoiceKey()
-    if (key === this._lastSentVoiceKey) {
+    // A repeat of what the node already has is dropped only while it reports
+    // voice connected, or while that same update is still on its way. After
+    // a close both servers take an unchanged PATCH as "reconnect", so then a
+    // repeat is a real request.
+    if (
+      key === this._lastSentVoiceKey &&
+      (this._player?.connected || this._voiceInFlightKey === key)
+    ) {
       sharedPool.release(pending.payload)
       return Promise.resolve(false)
     }
-    // Set before the send so a re-send of the same data while this one is in
-    // flight is dropped, and cleared if it fails: the key means "the node has
-    // this", and a failed send left it with nothing, so the next re-send has
-    // to go out.
+    // Cleared if the send fails: the key means "the node has this", and a
+    // failed send left it with nothing.
     this._lastSentVoiceKey = key
+    this._voiceInFlightKey = key
     const aqua = this._aqua
     const guildId = this._guildId
 
@@ -595,7 +594,10 @@ class Connection {
           return false
         }
       )
-      .finally(() => sharedPool.release(pending.payload))
+      .finally(() => {
+        if (this._voiceInFlightKey === key) this._voiceInFlightKey = ''
+        sharedPool.release(pending.payload)
+      })
   }
 
   async _recoverMissingPlayer(isSessionError) {
