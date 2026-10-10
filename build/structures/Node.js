@@ -81,6 +81,16 @@ const _functions = {
     return String(reason)
   },
 
+  // The upgrade was answered with an HTTP status instead of a socket: the
+  // proxy is up and the node's WebSocket is not behind it. ws names the
+  // status; Bun only says it was not 101 (0 here). null: nothing answered.
+  upgradeStatus(err) {
+    const msg = err?.message || ''
+    const ws = /Unexpected server response: (\d+)/.exec(msg)
+    if (ws) return Number(ws[1])
+    return msg.includes('Expected 101 status code') ? 0 : null
+  },
+
   errMsg(err) {
     return err?.message || String(err)
   },
@@ -104,6 +114,7 @@ class Node {
   static JITTER_MAX = 2000
   static JITTER_FACTOR = 0.2
   static WS_CLOSE_NORMAL = 1000
+  static WS_CLOSE_ABNORMAL = 1006
   static DEFAULT_MAX_PAYLOAD = 1048576
   static DEFAULT_HANDSHAKE_TIMEOUT = 15000
   static DEFAULT_REST_TIMEOUT = 30000
@@ -132,6 +143,15 @@ class Node {
   static STATS_TIMEOUT = 180000
   // How long a dead socket's close may take before the close is run here.
   static DEAD_CLOSE_GRACE = 1000
+  // A 1006 only says the link broke: an edge proxy restarting, a network
+  // blip, or the node's host gone. The node itself keeps playing (voice is
+  // UDP from the node, not through the proxy) and holds the session for its
+  // resume timeout. So the players stay while the link is retried at these
+  // delays, each attempt allowed LINK_ATTEMPT_TIMEOUT, for
+  // failoverOptions.linkGraceMs. An HTTP answer to the upgrade means the
+  // proxy is up and the node is not, and ends the wait at once.
+  static LINK_RETRY_DELAYS = Object.freeze([0, 250, 500, 1000, 2000])
+  static LINK_ATTEMPT_TIMEOUT = 2000
 
   constructor(aqua, connOptions, options = {}) {
     this.aqua = aqua
@@ -191,6 +211,10 @@ class Node {
     // guildId -> events that arrived while a restore was asking this node
     // about that guild and no player existed yet (see AquaRecovery).
     this._adoptHolds = new Map()
+    // The broken link being waited out (see _holdLink), and the gate its
+    // players' REST requests wait at until it is settled (Rest#_inGuildOrder).
+    this._linkGrace = null
+    this._linkGate = null
 
     this._wsIsBun = !!process.isBun
     this._bunCleanup = null
@@ -248,6 +272,11 @@ class Node {
 
   get isUsable() {
     return this.connected && !!this.sessionId
+  }
+
+  /** The socket broke and is being reconnected; its players stay meanwhile. */
+  get inLinkGrace() {
+    return !!this._linkGrace
   }
 
   /** The balancer's current score for this node. Lower is better. */
@@ -446,12 +475,164 @@ class Node {
       return
     }
 
-    this.aqua.handleNodeFailover?.(this)
+    // Moving the players on a 1006 went through a voice handover on another
+    // node for audio that had never stopped, when the link usually comes
+    // back within seconds.
+    if (code === Node.WS_CLOSE_ABNORMAL && this._holdLink()) {
+      this._scheduleReconnect()
+      return
+    }
+    this._moveLinkPlayers()
     this._scheduleReconnect()
+  }
+
+  // Starts the grace for a broken link, or carries on with the one running
+  // (an attempt that opened and broke again before ready). False when there
+  // is none to give.
+  _holdLink() {
+    if (this._linkGrace) return true
+    const ms = Number(this.aqua?.failoverOptions?.linkGraceMs)
+    if (!(ms > 0)) return false
+    // Resolves to whether a guild's held requests may still be sent.
+    const gate = { promise: null, open: null }
+    gate.promise = new Promise((resolve) => {
+      gate.open = (send) => {
+        if (this._linkGate === gate) this._linkGate = null
+        resolve(send)
+      }
+    })
+    const since = Date.now()
+    const grace = { since, until: since + ms, attempt: 0, timer: null, gate }
+    grace.timer = setTimeout(() => {
+      if (this._linkGrace !== grace) return
+      this._emitDebug(`Link to ${this.name} still down after ${ms} ms`)
+      this._moveLinkPlayers('grace_expired')
+      if (!this._connectPromise) this._scheduleReconnect()
+    }, ms)
+    unrefTimer(grace.timer)
+    this._linkGrace = grace
+    this._linkGate = gate
+    if (this.aqua?.debugTrace) {
+      this.aqua._trace('node.link.grace', {
+        node: this.name,
+        ms,
+        players: this.players?.size || 0
+      })
+    }
+    this.aqua.emit(AqualinkEvents.NodeReconnect, this, {
+      infinite: !!this.infiniteReconnects,
+      attempt: 1,
+      backoffTime: 0,
+      linkGrace: true
+    })
+    return true
+  }
+
+  // Ends a grace by moving its players: the node is gone, or something
+  // other than a broken link closed it. Their held requests wait for the
+  // move and then go out only for a player that is still here; a moved
+  // player took its state, and any change those requests carried, with it.
+  _moveLinkPlayers(reason = 'node_closed') {
+    const grace = this._linkGrace
+    this._linkGrace = null
+    if (grace) clearTimeout(grace.timer)
+    if (grace && this.aqua?.debugTrace) {
+      this.aqua._trace('node.link.move', {
+        node: this.name,
+        reason,
+        downMs: Date.now() - grace.since
+      })
+    }
+    const moving = Promise.resolve(this.aqua?.handleNodeFailover?.(this))
+    if (!grace) return
+    moving.catch(_functions.noop).then(() =>
+      grace.gate.open((guildId) => {
+        const player = this._getPlayer(guildId)
+        return !!player && !player.destroyed && player.nodes === this
+      })
+    )
+  }
+
+  // A ready during the grace. Resumed: the players are still there and
+  // still playing, so nothing is moved; the node is asked which players it
+  // holds, in case one went with a worker meanwhile. Not resumed: the node
+  // restarted and the session's players are rebuilt (_handleReady), so the
+  // old requests are dropped.
+  async _restoreLink(grace, resumed) {
+    clearTimeout(grace.timer)
+    if (!resumed) {
+      grace.gate.open(() => false)
+      return
+    }
+    const players = []
+    for (const player of this.players || []) {
+      if (!player.destroyed) players.push(String(player.guildId))
+    }
+    const missing = new Set()
+    if (players.length) {
+      try {
+        const remote = await this.rest.makeRequest(
+          'GET',
+          `${this.rest._getSessionPath()}/players`,
+          undefined,
+          { timeout: Node.LINK_ATTEMPT_TIMEOUT }
+        )
+        if (Array.isArray(remote)) {
+          const held = new Set(remote.map((p) => String(p?.guildId)))
+          for (const id of players) if (!held.has(id)) missing.add(id)
+        }
+      } catch (err) {
+        this._emitDebug(
+          () =>
+            `Player check after link restore failed on ${this.name}: ${_functions.errMsg(err)}`
+        )
+      }
+    }
+    if (this.isDestroyed) return
+    grace.gate.open((guildId) => !missing.has(String(guildId)))
+    for (const id of missing) {
+      this.aqua?._recreateLostPlayer?.(id, this, 'player_missing', null)
+    }
+    const downMs = Date.now() - grace.since
+    if (this.aqua?.debugTrace) {
+      this.aqua._trace('node.link.restored', {
+        node: this.name,
+        downMs,
+        players: players.length,
+        missing: missing.size
+      })
+    }
+    this.aqua?.emit(AqualinkEvents.NodeLinkRestored, this, {
+      downMs,
+      players: players.length,
+      missing: missing.size
+    })
+  }
+
+  // The next quick attempt inside the grace. None once the budget cannot
+  // fit another; the grace's timer then moves the players.
+  _scheduleLinkRetry() {
+    const grace = this._linkGrace
+    const delays = Node.LINK_RETRY_DELAYS
+    const delay = delays[Math.min(grace.attempt, delays.length - 1)]
+    const left = grace.until - Date.now()
+    if (delay >= left) return
+    grace.attempt++
+    if (this.aqua?.debugTrace) {
+      this.aqua._trace('node.link.retry', {
+        node: this.name,
+        attempt: grace.attempt,
+        delay,
+        left
+      })
+    }
+    this.reconnectTimeoutId = setTimeout(this._boundHandlers.connect, delay)
+    unrefTimer(this.reconnectTimeoutId)
   }
 
   _scheduleReconnect() {
     this._clearReconnectTimeout()
+    if (this._linkGrace) return this._scheduleLinkRetry()
 
     const attempt = ++this.reconnectAttempted
     if (this.aqua?.debugTrace) {
@@ -537,6 +718,19 @@ class Node {
       })
     }
 
+    // Inside a link grace an attempt gets only what is left of it.
+    const grace = this._linkGrace
+    const timeout = grace
+      ? Math.max(
+          1,
+          Math.min(
+            this.timeout,
+            Node.LINK_ATTEMPT_TIMEOUT,
+            grace.until - Date.now()
+          )
+        )
+      : this.timeout
+
     let connectPromise
     connectPromise = new Promise((resolve, reject) => {
       let settled = false
@@ -554,12 +748,12 @@ class Node {
         ok ? resolve() : reject(error)
       }
       timer = setTimeout(() => {
-        const error = new Error(`WebSocket open timeout: ${this.timeout}ms`)
+        const error = new Error(`WebSocket open timeout: ${timeout}ms`)
         this._isConnecting = false
         this._cleanup()
         settle(false, error)
         this._scheduleReconnect()
-      }, this.timeout)
+      }, timeout)
       unrefTimer(timer)
       this._rejectConnect = (error) => settle(false, error)
 
@@ -576,6 +770,13 @@ class Node {
             this._isConnecting = false
             this._cleanup()
             settle(false, error)
+            const status = _functions.upgradeStatus(error)
+            if (this._linkGrace && status !== null) {
+              this._emitDebug(
+                `Link to ${this.name} answered ${status || 'non-101'}: the node is down`
+              )
+              this._moveLinkPlayers('node_down')
+            }
             this._scheduleReconnect()
           }
         }
@@ -633,7 +834,11 @@ class Node {
             'error',
             (event) => {
               const err = event?.error
-              onError(err instanceof Error ? err : new Error('WebSocket error'))
+              onError(
+                err instanceof Error
+                  ? err
+                  : new Error(event?.message || 'WebSocket error')
+              )
             },
             false
           )
@@ -667,7 +872,7 @@ class Node {
         const ws = new WebSocketImpl(this.wsUrl, {
           headers: this._headers,
           perMessageDeflate: false,
-          handshakeTimeout: this.timeout,
+          handshakeTimeout: timeout,
           maxPayload: this.maxPayload,
           skipUTF8Validation: this.skipUTF8Validation
         })
@@ -785,6 +990,9 @@ class Node {
     this._connectPromise = null
     this._clearReconnectTimeout()
     this._cleanup()
+    if (this._linkGrace) clearTimeout(this._linkGrace.timer)
+    this._linkGrace = null
+    this._linkGate?.open(() => false)
 
     if (!clean) this.aqua.handleNodeFailover?.(this)
 
@@ -868,6 +1076,10 @@ class Node {
       return
     }
 
+    // Settled before anything awaits, so the grace cannot also move them.
+    const grace = this._linkGrace
+    this._linkGrace = null
+
     const oldSessionId = this.sessionId
     const sessionInvalidated = !payload.resumed && !!oldSessionId
     const sessionChanged = sessionInvalidated && oldSessionId !== sessionId
@@ -884,6 +1096,11 @@ class Node {
     }
     this.rest.setSessionId(sessionId)
     this._headers['Session-Id'] = sessionId
+    if (grace) {
+      this._restoreLink(grace, !!payload.resumed).catch((err) =>
+        this._emitError(`Link restore failed: ${_functions.errMsg(err)}`)
+      )
+    }
 
     if (sessionInvalidated && this.aqua?.players) {
       this._emitDebug(
@@ -997,7 +1214,10 @@ class Node {
       }
     }
 
-    if (this.aqua?.players) {
+    // A resumed session still has its players, voice included (a link that
+    // came back inside its grace, see _restoreLink). A same-channel join for
+    // each would only risk new credentials and a voice handover mid-song.
+    if (this.aqua?.players && !this.resumed) {
       const PLAYER_BATCH_SIZE = 20
       const playersToResume = []
       for (const [guildId, player] of this.aqua.players) {

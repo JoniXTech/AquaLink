@@ -24,6 +24,7 @@ const AqualinkEvents = {
   NodeCustomOp: 'nodeCustomOp',
   NodeFailover: 'nodeFailover',
   NodeFailoverComplete: 'nodeFailoverComplete',
+  NodeLinkRestored: 'nodeLinkRestored',
   Debug: 'debug',
   Error: 'error',
   PlayerCreate: 'playerCreate',

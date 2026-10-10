@@ -66,7 +66,34 @@ suppression flags that could get stuck and leave a player silent for good.
   voice deadline. The host gets `playerReconnect` with reason
   `worker_failed`, then `playerMigrated` with the same reason.
 
-## Event changes
+## Node link blips
+
+- A node whose socket broke with 1006 (an edge proxy restarting, a network
+  blip, or the heartbeat finding it silent) keeps its players while the
+  link is retried, for `failoverOptions.linkGraceMs` (default 5000; 0 turns
+  it off). The node keeps playing through that, since voice doesn't go
+  through the proxy, and holds the session for its resume timeout. Every
+  such close used to move all the node's players to another node at once,
+  through seconds of voice handover each, for audio that had never stopped;
+  the reconnect itself only came 10 s later.
+- During the grace, reconnects run at once and then after 250 ms, 500 ms,
+  1 s and 2 s, each allowed 2 s. An HTTP answer to the upgrade (502, 404,
+  ...) means the proxy is up and the node is not, and moves the players at
+  once. So does the end of the grace, or any close other than 1006 (1000
+  `Server shutdown` included). After that, reconnects follow the normal
+  schedule.
+- Those players' REST requests (voice updates, pause, volume, ...) wait in
+  their guild's queue during the grace. They go out in order once the
+  session resumes. If the players are moved instead, they're dropped: the
+  moved player carries the same changes. The voice deadline's check waits
+  with them, so it doesn't rejoin over a link that's down.
+- After a resume, aqualink asks the node which players it still has. Any it
+  lost meanwhile is rebuilt on it, as for a worker failure (reason
+  `player_missing`). A resumed session no longer makes every player on the
+  node send a same-channel join (`autoResume`), which could bring new
+  credentials and a voice handover mid-song.
+- A resume after the node restarted (`resumed: false`) is handled as before,
+  and the grace doesn't also move those players.
 
 - `socketClosed`: the payload is typed as `VoiceClosePayload`. When the
   deadline gives up, `code` is `null` and `timeout` is `true`. Every
@@ -95,6 +122,13 @@ suppression flags that could get stuck and leave a player silent for good.
   claimed the same way from the `trackStuck` listener: claimed, it isn't
   stopped (the retry replaces it), and if the claim is released or times
   out before the track ends, it is stopped then.
+- New `nodeLinkRestored(node, { downMs, players, missing })`: the link came
+  back inside its grace and nothing was moved. `nodeDisconnect` is still
+  emitted at the close, and `nodeReconnect` once, with `linkGrace: true`,
+  when the grace starts.
+- `nodeFailover` is emitted only when players are actually being moved: not
+  for a node with no players, nor when there is no other node to move them
+  to.
 - `playerReconnected` is no longer emitted. A failed voice rejoins the same
   player instead of building a new one.
 
