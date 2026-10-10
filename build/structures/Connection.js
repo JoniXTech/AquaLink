@@ -150,9 +150,9 @@ class Connection {
     this._reconnectTimer = null
     this._lastVoiceDataUpdate = 0
     this._consecutiveFailures = 0
-    // Which voice attempt is current, and when the voice last changed.
+    // Which voice attempt is current, and when it last moved on.
     this.generation = 0
-    this._voiceChangedAt = 0
+    this._generationAt = 0
 
     this._voiceFlushTimer = null
     this._pendingUpdate = null
@@ -242,7 +242,7 @@ class Connection {
   // voice close is matched against it (see PlayerLifecycle.socketClosed).
   _bumpGeneration(reason) {
     this.generation++
-    this._voiceChangedAt = Date.now()
+    this._generationAt = Date.now()
     if (this._aqua?.debugTrace) {
       this._aqua._trace('connection.generation', {
         guildId: this._guildId,
@@ -250,12 +250,6 @@ class Connection {
         reason
       })
     }
-  }
-
-  // A voice PATCH makes the node replace its voice connection, and the old
-  // one's close can arrive after it.
-  _markVoicePatch() {
-    this._voiceChangedAt = Date.now()
   }
 
   resendVoiceUpdate(force = false) {

@@ -943,7 +943,7 @@ declare module 'aqualink' {
     _lastSentVoiceKey: string
     _voiceInFlightKey: string
     _lastVoiceDataUpdate: number
-    _voiceChangedAt: number
+    _generationAt: number
     _stateFlags: number
     _regionMigrationAttempted: boolean
 
@@ -964,7 +964,6 @@ declare module 'aqualink' {
     _sendUpdate(payload: Record<string, unknown>): Promise<void>
     _prepareFreshVoiceJoin(): boolean
     _bumpGeneration(reason: string): void
-    _markVoicePatch(): void
     _handleDisconnect(): void
     _clearPendingUpdate(): void
     _checkRegionMigration(): void
