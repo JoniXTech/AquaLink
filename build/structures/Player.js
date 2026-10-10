@@ -1411,8 +1411,8 @@ class Player extends EventEmitter {
     this.aqua.emit(AqualinkEvents.PlayerReconnect, this, { resuming: true })
   }
 
-  _armVoiceDeadline(ms, ifNone = false) {
-    this._lifecycleController?.armVoiceDeadline(ms, ifNone)
+  _armVoiceDeadline(ms, ifNone = false, check = false) {
+    this._lifecycleController?.armVoiceDeadline(ms, ifNone, check)
   }
 
   async socketClosed(_player, _track, payload) {

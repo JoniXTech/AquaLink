@@ -7,6 +7,9 @@ const { reportSuppressedError } = require('./Reporting')
 const MAX_REJOINS = 2
 // How long after a re-send the node is asked again: it answers quickly.
 const DEADLINE_RECHECK_MS = 5000
+// Deadlines in a row the node did not answer (no response, or a 5xx)
+// before the player is moved to another node.
+const UNREACHABLE_BEFORE_MOVE = 2
 
 class PlayerLifecycle {
   // How long a voice close waits before it is acted on, and how close to a
@@ -24,6 +27,8 @@ class PlayerLifecycle {
     this._deadlineSeq = 0
     this._rejoins = 0
     this._deadlineResent = false
+    this._deadlineCheck = false
+    this._deadlineUnreachable = 0
   }
 
   handlePlayerUpdate(packet) {
@@ -133,12 +138,15 @@ class PlayerLifecycle {
   // playerUpdate. It is the only backstop, on every node type, and it does
   // not care what state the player's flags are in.
   // `ifNone` keeps a pending deadline: a voice PATCH belongs to the attempt
-  // that armed it and must not stretch that attempt's window.
-  armVoiceDeadline(ms = this._voiceDeadlineMs(), ifNone = false) {
+  // that armed it and must not stretch that attempt's window. `check` is an
+  // early look (after a move or a re-send), which re-sends a lost update
+  // but leaves a handshake still in progress to the normal deadline.
+  armVoiceDeadline(ms = this._voiceDeadlineMs(), ifNone = false, check = false) {
     const player = this.player
     if (player.destroyed || !player._pendingTimers) return
     if (this._deadlineTimer && ifNone) return
     this._clearDeadlineTimer()
+    this._deadlineCheck = check
     const seq = this._deadlineSeq
     this._deadlineTimer = player._createTimer(() => {
       this._deadlineTimer = null
@@ -155,6 +163,7 @@ class PlayerLifecycle {
     if (!reset) return
     this._rejoins = 0
     this._deadlineResent = false
+    this._deadlineUnreachable = 0
   }
 
   _clearDeadlineTimer() {
@@ -169,17 +178,20 @@ class PlayerLifecycle {
     const player = this.player
     if (player.destroyed || seq !== this._deadlineSeq) return
     const guildId = player.guildId
-
-    player._reconnecting = false
-    player._resuming = false
+    const check = this._deadlineCheck
 
     // An idle player may get no playerUpdate at all, so `connected` is not
     // proof that it is down.
     const node = player.nodes
     let remote = null
+    let unreachable = false
     try {
       remote = await node.rest.getPlayer(guildId)
     } catch (error) {
+      // No answer, or the node's REST failing, says nothing about voice. A
+      // 4xx is an answer: the node does not have the player.
+      const status = error?.statusCode || error?.response?.statusCode || 0
+      unreachable = !status || status >= 500
       reportSuppressedError(player, 'player.voiceDeadline.get', error, {
         guildId,
         node: node?.name
@@ -190,11 +202,22 @@ class PlayerLifecycle {
       player.aqua._trace('player.voiceDeadline', {
         guildId,
         node: node?.name,
+        check,
+        unreachable,
         remoteConnected: !!remote?.state?.connected,
         rejoins: this._rejoins,
         resent: this._deadlineResent
       })
     }
+
+    // Nothing is spent on a node that cannot answer: a gateway rejoin
+    // cannot fix its REST. Moved off it if it stays that way.
+    if (unreachable) return this._onNodeUnreachable(node)
+    this._deadlineUnreachable = 0
+
+    // _resuming is left alone: it decides TrackStart.resumed, and the
+    // TrackStart of a restored track can still be on its way.
+    player._reconnecting = false
 
     if (remote?.state?.connected) {
       player.connected = true
@@ -204,38 +227,82 @@ class PlayerLifecycle {
 
     const voiceChannel = this._functions.toId(player.voiceChannel)
     if (!voiceChannel || player.connection?.isWaitingForDisconnect) {
-      player.destroy()
+      this._giveUp('no_channel', this._deadlinePayload())
       return
     }
 
     // No voice on the node: the update was lost (a 429), so send it again.
     // Voice but not connected: Discord refused those credentials, and only
-    // a fresh join gets new ones.
+    // a fresh join gets new ones -- unless this is the early check, when
+    // the node may simply still be shaking hands.
     const voice = remote?.voice
     const nodeHasVoice = !!(voice?.token && voice?.endpoint && voice?.sessionId)
     if (!nodeHasVoice && !this._deadlineResent) {
       if (player.connection?.resendVoiceUpdate(true)) {
         this._deadlineResent = true
-        this.armVoiceDeadline(DEADLINE_RECHECK_MS)
+        this.armVoiceDeadline(DEADLINE_RECHECK_MS, false, true)
         player.connection.flushVoiceUpdate()
         return
       }
+    }
+    if (check && nodeHasVoice) {
+      this.armVoiceDeadline()
+      return
     }
 
     if (this._rejoin(voiceChannel, null, 'voice_deadline')) return
     this._giveUp(
       'voice_deadline',
-      {
-        op: 'event',
-        type: 'WebSocketClosedEvent',
-        guildId,
-        code: null,
-        reason: 'voice_deadline',
-        byRemote: false,
-        timeout: true
-      },
+      this._deadlinePayload(),
       new Error(`Voice did not connect in time (guild=${guildId})`)
     )
+  }
+
+  _deadlinePayload() {
+    return {
+      op: 'event',
+      type: 'WebSocketClosedEvent',
+      guildId: this.player.guildId,
+      code: null,
+      reason: 'voice_deadline',
+      byRemote: false,
+      timeout: true
+    }
+  }
+
+  // The node's REST did not answer the deadline. Once is noise; in a row,
+  // the node is the problem, so the player moves to another one if there is
+  // one. Otherwise it waits: destroying it would end the session over a
+  // REST outage that a rejoin cannot fix.
+  _onNodeUnreachable(node) {
+    const player = this.player
+    const aqua = player.aqua
+    this._deadlineUnreachable++
+    if (this._deadlineUnreachable >= UNREACHABLE_BEFORE_MOVE) {
+      const target = aqua?.selectNode?.('failover', {
+        exclude: [node?.name],
+        guildId: player.guildId
+      })
+      if (target && target !== node && target.isUsable) {
+        if (aqua.debugTrace) {
+          aqua._trace('player.voiceDeadline.move', {
+            guildId: player.guildId,
+            from: node?.name,
+            to: target.name
+          })
+        }
+        aqua.movePlayerToNode(player.guildId, target, 'node_unreachable').catch(
+          (error) => {
+            reportSuppressedError(player, 'player.voiceDeadline.move', error, {
+              guildId: player.guildId
+            })
+            if (!player.destroyed) this.armVoiceDeadline()
+          }
+        )
+        return
+      }
+    }
+    this.armVoiceDeadline()
   }
 
   // A fresh join while any are left. False when they are used up.

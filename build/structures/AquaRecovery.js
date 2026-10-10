@@ -632,7 +632,7 @@ class AquaRecovery {
       }
     }
     // Every migration and in-place rebuild ends here.
-    newPlayer._armVoiceDeadline?.(RESTORE_VOICE_CHECK_MS)
+    newPlayer._armVoiceDeadline?.(RESTORE_VOICE_CHECK_MS, false, true)
   }
 
   async loadPlayers(filePath = './AquaPlayers.jsonl') {
@@ -1067,7 +1067,7 @@ class AquaRecovery {
     }
     player.restored = info
     this.aqua.emit(AqualinkEvents.PlayerRestored, player, info)
-    player._armVoiceDeadline?.(RESTORE_VOICE_CHECK_MS)
+    player._armVoiceDeadline?.(RESTORE_VOICE_CHECK_MS, false, true)
     return info
   }
 
