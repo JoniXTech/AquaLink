@@ -237,6 +237,9 @@ class Player extends EventEmitter {
     this.textChannel = options.textChannel
     this.voiceChannel = options.voiceChannel
     this.playing = this.paused = this.connected = this.destroyed = false
+    // A rejoin has left the voice channel on purpose and is joining again:
+    // the bot's null voice state meanwhile is not a disconnect.
+    this.voiceRejoining = false
     this.state = PLAYER_STATE.IDLE
     this.txId = 0
     this.isAutoplayEnabled = this.isAutoplay = false
@@ -865,6 +868,12 @@ class Player extends EventEmitter {
     }
     if (this.paused === !!paused) return this
     this.paused = !!paused
+    // A track still waiting for voice was never sent; `paused: false` alone
+    // would resume nothing.
+    if (!this.paused && this._deferredStart) {
+      this._flushDeferredPlay()
+      return this
+    }
     this.batchUpdatePlayer({ paused: this.paused }, true).catch((error) =>
       reportSuppressedError(this, 'player.pause', error, {
         guildId: this.guildId,

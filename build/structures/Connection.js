@@ -161,6 +161,8 @@ class Connection {
 
     this._nullChannelTimer = null
     this.isWaitingForDisconnect = false
+    // Set while a rejoin's own leave is out: called with Discord's answer.
+    this._selfLeave = null
 
     this._lastStateReqAt = 0
     this._lastResumeBlockedLogAt = 0
@@ -279,6 +281,19 @@ class Connection {
     if (data.txId && data.txId < this.txId) return
 
     if (!channelId) {
+      // The answer to the player's own leave before it joins again, not a
+      // disconnect.
+      if (this._selfLeave) {
+        const join = this._selfLeave
+        this._selfLeave = null
+        if (this._aqua?.debugTrace) {
+          this._aqua._trace('connection.stateUpdate.selfLeave', {
+            guildId: this._guildId
+          })
+        }
+        join()
+        return
+      }
       if (this._aqua?.debugTrace) {
         this._aqua._trace('connection.stateUpdate.nullChannel', {
           guildId: this._guildId,

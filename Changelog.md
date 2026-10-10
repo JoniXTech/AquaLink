@@ -34,6 +34,19 @@ suppression flags that could get stuck and leave a player silent for good.
   answer below 500 ends the run, and so do 60 s without a new failure.
   Configurable with `nodeHealth.maxRestFailures` and
   `nodeHealth.restFailureWindow`.
+- A player restored while paused (failover, in-place rebuild) gets its track
+  together with the pause, `{ track, paused: true }`. The pause used to go
+  out on its own first, and a paused NodeLink player sends no playerUpdate,
+  so the track waited for one forever. When the deadline finds voice up, it
+  now sends a track still waiting for voice, and unpausing such a player
+  sends the track rather than `{ paused: false }` alone.
+- A rejoin waits 5 s for Discord's new credentials. A join to the channel
+  the bot is already in may not produce any, so if none come it leaves the
+  channel and joins again, as part of the same rejoin. The bot's own voice
+  state with no channel that answers the leave is not a disconnect: no
+  `playerMove` to `null`, no null-channel grace. `player.voiceRejoining` is
+  true from the leave until voice is up; a host that ends its player when
+  the bot leaves voice should skip that while it is set.
 
 ## Event changes
 
@@ -47,7 +60,8 @@ suppression flags that could get stuck and leave a player silent for good.
   `retriesLeft: 0` and `reason` (`voice_deadline` or `rejoins_exhausted`).
   Typed as `ReconnectionFailedData`.
 - `playerReconnect`: now typed (`PlayerReconnectData`). It carries `reason`
-  for a rejoin.
+  for a rejoin, and `leave_rejoin` when the rejoin leaves the channel to
+  join it again.
 - `playerReconnected` is no longer emitted. A failed voice rejoins the same
   player instead of building a new one.
 
