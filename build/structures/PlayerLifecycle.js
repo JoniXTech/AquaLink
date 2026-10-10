@@ -343,14 +343,13 @@ class PlayerLifecycle {
   }
 
   // A voice close is acted on only if it belongs to the current voice
-  // attempt. One that arrives within the grace of a voice change, on either
-  // side, is the old connection's: a channel move, an adopt handover, a
-  // credential swap (NodeLink closes the replaced connection with a 4014)
-  // or this player's own rejoin all close a socket nobody uses any more.
-  // A real failure caught in that window is left to the voice deadline.
-  // The voice PATCH half of the window is only there because NodeLink
-  // reports a replaced connection as a Discord 4014; narrow it once NodeLink
-  // marks those (~/.claude/plans/nodelink-voice-close-honesty.md).
+  // attempt. One that arrives within the grace of a new generation, on
+  // either side, is the old connection's: Discord closes the old voice
+  // socket when the bot is moved (a real 4014, which can reach us before or
+  // after the gateway's voice state update), and an adopt handover or this
+  // player's own rejoin do the same. A real failure caught in that window
+  // is left to the voice deadline. A voice PATCH alone opens no window: the
+  // node replaces its socket without reporting a close.
   async socketClosed(_player, _track, payload) {
     const player = this.player
     if (player.destroyed) return
@@ -368,9 +367,9 @@ class PlayerLifecycle {
     })
     if (player.destroyed || !conn || player.connection !== conn) return
 
-    const changedAt = conn._voiceChangedAt || 0
+    const generationAt = conn._generationAt || 0
     let action
-    if (conn.generation !== generation || changedAt >= receivedAt - grace) {
+    if (conn.generation !== generation || generationAt >= receivedAt - grace) {
       action = 'old_connection'
     } else if (!player.voiceChannel || conn.isWaitingForDisconnect) {
       action = 'no_channel'
