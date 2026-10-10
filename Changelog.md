@@ -77,7 +77,9 @@ suppression flags that could get stuck and leave a player silent for good.
   so the retry doesn't race aqualink's own advance. It returns `release()`,
   which runs that advance when the host gives up. The claim lapses at the
   next `trackStart`, or advances on its own after
-  `Player.FAILED_TRACK_CLAIM_MS` (10 s).
+  `Player.FAILED_TRACK_CLAIM_MS` (10 s). A `play()` of the claimed track
+  (the retry) stops that timer, so a slow retry is not raced, and the next
+  failure ends the claim unless the host claims again.
 - `playerReconnected` is no longer emitted. A failed voice rejoins the same
   player instead of building a new one.
 

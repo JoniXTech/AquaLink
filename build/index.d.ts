@@ -479,7 +479,10 @@ declare module 'aqualink' {
      * the advance aqualink held back (the next track, or `queueEnd`), or,
      * before the end has arrived, lets it advance as usual. The claim lapses
      * at the next `trackStart` (nothing advances) or after
-     * `Player.FAILED_TRACK_CLAIM_MS` (it advances as if released).
+     * `Player.FAILED_TRACK_CLAIM_MS` (it advances as if released). A `play()`
+     * of the claimed track (the retry) stops that timer: the claim then lasts
+     * until the retry starts or fails. A later `trackError` ends the claim:
+     * claim again there to keep owning the track.
      *
      * Returns null when called outside that track's `trackError` emit.
      */
@@ -573,10 +576,11 @@ declare module 'aqualink' {
 
     // Utility Methods
     send(data: Record<string, unknown>): void
+    /** Resolves false when an immediate update failed (it is reported as an error). */
     batchUpdatePlayer(
       data: UpdatePlayerOptions['data'],
       immediate?: boolean
-    ): Promise<void>
+    ): Promise<boolean | void>
 
     // Internal Methods
     _parseLoop(loop: unknown): LoopMode
