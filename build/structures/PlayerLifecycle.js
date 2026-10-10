@@ -15,6 +15,11 @@ class PlayerLifecycle {
   // How long a voice close waits before it is acted on, and how close to a
   // voice change it may arrive and still be taken for the old connection's.
   static CLOSE_GRACE_MS = 2000
+  // How long a rejoin waits for Discord's new credentials before it leaves
+  // the channel for real, and how long that leave waits for Discord to
+  // confirm it before joining anyway.
+  static REJOIN_SERVER_WAIT_MS = 5000
+  static LEAVE_CONFIRM_MS = 5000
 
   constructor(player, deps) {
     this.player = player
@@ -29,6 +34,8 @@ class PlayerLifecycle {
     this._deadlineResent = false
     this._deadlineCheck = false
     this._deadlineUnreachable = 0
+    this._leaveRejoinTimer = null
+    this._leaveRejoinSeq = 0
   }
 
   handlePlayerUpdate(packet) {
@@ -113,10 +120,14 @@ class PlayerLifecycle {
   // Drops the voice credentials and joins the channel again, so Discord
   // hands out new ones. _reconnecting marks the rejoin as under way for
   // play() and trackEnd until the player connects or the deadline acts.
+  // A join to the channel the bot is already in may get no new
+  // credentials, so if none come the rejoin leaves for real and joins again.
   rejoinVoice(voiceChannel) {
     const player = this.player
     if (!voiceChannel || !player.connection?._prepareFreshVoiceJoin?.())
       return false
+    this._cancelLeaveRejoin()
+    player.voiceRejoining = false
     player.connected = false
     player._reconnecting = true
     player.connect({
@@ -125,7 +136,89 @@ class PlayerLifecycle {
       deaf: player.deaf,
       mute: player.mute
     })
+    this._awaitVoiceServer()
     return true
+  }
+
+  // The rejoin cleared the credentials, so they are back once Discord's
+  // VOICE_SERVER_UPDATE for the join has arrived.
+  _awaitVoiceServer() {
+    const player = this.player
+    const conn = player.connection
+    const seq = ++this._leaveRejoinSeq
+    this._leaveRejoinTimer = player._createTimer(() => {
+      this._leaveRejoinTimer = null
+      if (player.destroyed || seq !== this._leaveRejoinSeq) return
+      if (player.connection !== conn || (conn.token && conn.endpoint)) return
+      this._leaveAndJoin(seq)
+    }, PlayerLifecycle.REJOIN_SERVER_WAIT_MS)
+  }
+
+  // Leaves the channel and joins it again, which always starts a new voice
+  // session, as part of the same rejoin. The bot's own null voice state
+  // that answers the leave is this player's doing, not a disconnect: the
+  // connection hands it back here (no PlayerMove, no null-channel grace),
+  // and `voiceRejoining` tells the host not to end the player over it.
+  // The node keeps its player; the join's credentials replace its voice.
+  _leaveAndJoin(seq) {
+    const player = this.player
+    const conn = player.connection
+    player.voiceRejoining = true
+    player.aqua?.emit?.(AqualinkEvents.PlayerReconnect, player, {
+      code: null,
+      fresh: true,
+      resuming: false,
+      reason: 'leave_rejoin'
+    })
+    if (player.destroyed || seq !== this._leaveRejoinSeq) return
+    if (player.aqua?.debugTrace) {
+      player.aqua._trace('player.voice.leaveRejoin', {
+        guildId: player.guildId,
+        voiceChannel: player.voiceChannel
+      })
+    }
+    // The join re-arms the deadline; it must not act on the leave.
+    this.clearVoiceDeadline()
+    conn._selfLeave = () => this._joinAfterLeave(seq)
+    this._leaveRejoinTimer = player._createTimer(() => {
+      this._leaveRejoinTimer = null
+      this._joinAfterLeave(seq)
+    }, PlayerLifecycle.LEAVE_CONFIRM_MS)
+    player.send({
+      guild_id: player.guildId,
+      channel_id: null,
+      self_deaf: player.deaf,
+      self_mute: player.mute
+    })
+  }
+
+  _joinAfterLeave(seq) {
+    const player = this.player
+    if (player.destroyed || seq !== this._leaveRejoinSeq) return
+    this._cancelLeaveRejoin()
+    const voiceChannel = this._functions.toId(player.voiceChannel)
+    if (!voiceChannel || !player.connection?._prepareFreshVoiceJoin?.()) {
+      this.armVoiceDeadline()
+      return
+    }
+    player.connected = false
+    player._reconnecting = true
+    player.connect({
+      guildId: player.guildId,
+      voiceChannel,
+      deaf: player.deaf,
+      mute: player.mute
+    })
+  }
+
+  _cancelLeaveRejoin() {
+    this._leaveRejoinSeq++
+    if (this._leaveRejoinTimer) {
+      clearTimeout(this._leaveRejoinTimer)
+      this.player._pendingTimers?.delete(this._leaveRejoinTimer)
+      this._leaveRejoinTimer = null
+    }
+    if (this.player.connection) this.player.connection._selfLeave = null
   }
 
   _voiceDeadlineMs() {
@@ -161,6 +254,12 @@ class PlayerLifecycle {
   clearVoiceDeadline(reset = false) {
     this._clearDeadlineTimer()
     if (!reset) return
+    // Voice is up. A rejoin still waiting for new credentials has its
+    // answer; one that has already left must still join.
+    if (!this.player.connection?._selfLeave) {
+      this._cancelLeaveRejoin()
+      this.player.voiceRejoining = false
+    }
     this._rejoins = 0
     this._deadlineResent = false
     this._deadlineUnreachable = 0

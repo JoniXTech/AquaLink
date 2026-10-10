@@ -344,6 +344,12 @@ declare module 'aqualink' {
     paused: boolean
     connected: boolean
     destroyed: boolean
+    /**
+     * A rejoin got no new voice credentials, so it left the channel and is
+     * joining again. The bot's own voice state with no channel is that leave,
+     * not a disconnect: don't end the player over it while this is true.
+     */
+    voiceRejoining: boolean
     current: Track | null
     position: number
     timestamp: number
@@ -944,6 +950,7 @@ declare module 'aqualink' {
     _voiceInFlightKey: string
     _lastVoiceDataUpdate: number
     _generationAt: number
+    _selfLeave: (() => void) | null
     _stateFlags: number
     _regionMigrationAttempted: boolean
 
@@ -1806,7 +1813,11 @@ declare module 'aqualink' {
     resuming: boolean
     fresh?: true
     code?: number | null
-    reason?: 'socket_closed' | 'voice_deadline'
+    /**
+     * 'leave_rejoin': the rejoin got no new credentials and is leaving the
+     * channel to join it again (see `Player.voiceRejoining`).
+     */
+    reason?: 'socket_closed' | 'voice_deadline' | 'leave_rejoin'
   }
 
   export interface RestoreInfo {

@@ -237,6 +237,9 @@ class Player extends EventEmitter {
     this.textChannel = options.textChannel
     this.voiceChannel = options.voiceChannel
     this.playing = this.paused = this.connected = this.destroyed = false
+    // A rejoin has left the voice channel on purpose and is joining again:
+    // the bot's null voice state meanwhile is not a disconnect.
+    this.voiceRejoining = false
     this.state = PLAYER_STATE.IDLE
     this.txId = 0
     this.isAutoplayEnabled = this.isAutoplay = false
