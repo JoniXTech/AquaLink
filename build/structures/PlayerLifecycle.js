@@ -462,6 +462,19 @@ class PlayerLifecycle {
     const current = !!conn && conn._patchedGeneration === generation
     const grace = PlayerLifecycle.CLOSE_GRACE_MS
 
+    // Not a voice socket closing: the node lost the player itself (a NodeLink
+    // worker died) and nothing there will reconnect it, whichever socket was
+    // current. It is re-created at once rather than after the wait.
+    if (code === 5001 || payload?.reason === 'worker_failed') {
+      player.aqua?._recreateLostPlayer?.(
+        player.guildId,
+        player.nodes,
+        'worker_failed',
+        code ?? null
+      )
+      return
+    }
+
     // Not player._delay: destroy clears those timers, and this one has to
     // settle so the check below can see the player is gone.
     await new Promise((resolve) => {

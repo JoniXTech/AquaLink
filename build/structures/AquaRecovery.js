@@ -21,6 +21,9 @@ const httpStatus = (error) =>
 // `connected` within about a second. So a restored or migrated player gets
 // a short voice deadline: the node's answer about it is quick.
 const RESTORE_VOICE_CHECK_MS = 5000
+// A node that lost a player reports it twice (WorkerFailedEvent, then a
+// 5001 close); within this window the second report is the same loss.
+const LOST_PLAYER_DEDUPE_MS = 10000
 
 class AquaRecovery {
   constructor(aqua, deps) {
@@ -39,6 +42,47 @@ class AquaRecovery {
     this._trackResolveQueue = []
     this._brokenSnapshotNodes = new Set()
     this._brokenSnapshotWrites = new Map()
+    this._lostPlayers = new Map()
+  }
+
+  // The node no longer has this guild's player (a NodeLink worker died) and
+  // will not bring it back: nothing there reconnects, so waiting for the
+  // voice deadline only adds silence. The player is rebuilt on the node at
+  // once with all its state, and joins voice fresh, since the session the
+  // old credentials belonged to died with the worker. Each loss is handled
+  // once, whichever report arrives first.
+  recreateLostPlayer(guildId, node, reason, code = null) {
+    const id = String(guildId)
+    const player = this.aqua.players.get(id)
+    if (!player || player.destroyed || (node && player.nodes !== node))
+      return false
+    const now = Date.now()
+    for (const [gid, at] of this._lostPlayers) {
+      if (now - at >= LOST_PLAYER_DEDUPE_MS) this._lostPlayers.delete(gid)
+    }
+    if (this._lostPlayers.has(id)) return false
+    this._lostPlayers.set(id, now)
+    if (this.aqua.debugTrace) {
+      this.aqua._trace('player.lost', { guildId: id, node: node?.name, reason })
+    }
+    this.aqua.emit(AqualinkEvents.PlayerReconnect, player, {
+      code,
+      fresh: true,
+      resuming: false,
+      reason
+    })
+    this.rebuildPlayerInPlace(id, {
+      node: player.nodes,
+      reason,
+      destroyRemote: false,
+      freshVoice: true
+    }).catch((error) =>
+      reportSuppressedError(this.aqua, 'player.lost.rebuild', error, {
+        guildId: id,
+        reason
+      })
+    )
+    return true
   }
 
   _stateFor(id) {
@@ -387,7 +431,8 @@ class AquaRecovery {
 
     return this.movePlayerToNode(id, target, options.reason || 'rebuild', {
       force: true,
-      destroyRemote: options.destroyRemote !== false
+      destroyRemote: options.destroyRemote !== false,
+      freshVoice: !!options.freshVoice
     })
   }
 
@@ -453,7 +498,12 @@ class AquaRecovery {
         preserveMessage: true
       })
 
-      if (
+      // `freshVoice`: the old credentials are no good (the voice session
+      // went with the node's player), so the new player's own join must
+      // bring new ones, with the leave-and-rejoin fallback if it doesn't.
+      if (options.freshVoice) {
+        newPlayer._awaitVoiceServer?.()
+      } else if (
         this._applyVoiceBootstrap(newPlayer, {
           sid: oldVoice?.sessionId,
           ep: oldVoice?.endpoint,
