@@ -865,6 +865,12 @@ class Player extends EventEmitter {
     }
     if (this.paused === !!paused) return this
     this.paused = !!paused
+    // A track still waiting for voice was never sent; `paused: false` alone
+    // would resume nothing.
+    if (!this.paused && this._deferredStart) {
+      this._flushDeferredPlay()
+      return this
+    }
     this.batchUpdatePlayer({ paused: this.paused }, true).catch((error) =>
       reportSuppressedError(this, 'player.pause', error, {
         guildId: this.guildId,

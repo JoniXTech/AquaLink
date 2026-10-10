@@ -189,9 +189,14 @@ class AquaRecovery {
         })
         if (current && player?.queue?.add) {
           player.queue.add(current)
-          await player.play(undefined, { oneShot: current.oneShot })
+          // Paused with the track, not by a later op: a pause sent before
+          // voice is up leaves the deferred track waiting for a playerUpdate
+          // a paused player never sends.
+          await player.play(undefined, {
+            oneShot: current.oneShot,
+            paused: !!state.paused
+          })
           this.seekAfterTrackStart(player, id, state.position, 50)
-          if (state.paused) player.pause(true)
         }
         return player
       } finally {
@@ -606,8 +611,12 @@ class AquaRecovery {
       newPlayer.queue.add(...state.queue)
     if (state.current && this.aqua.failoverOptions.preservePosition) {
       if (this.aqua.failoverOptions.resumePlayback) {
+        // Paused with the track: see rebuildPlayer.
         ops.push(() =>
-          newPlayer.play(state.current, { oneShot: state.current.oneShot })
+          newPlayer.play(state.current, {
+            oneShot: state.current.oneShot,
+            paused: !!state.paused
+          })
         )
         this.seekAfterTrackStart(
           newPlayer,
@@ -615,7 +624,6 @@ class AquaRecovery {
           state.position,
           50
         )
-        if (state.paused) ops.push(() => newPlayer.pause(true))
       } else if (newPlayer.queue?.add) {
         newPlayer.queue.add(state.current)
       }

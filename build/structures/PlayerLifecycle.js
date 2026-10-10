@@ -219,9 +219,12 @@ class PlayerLifecycle {
     // TrackStart of a restored track can still be on its way.
     player._reconnecting = false
 
+    // A paused player sends no playerUpdate, so a track deferred until
+    // voice came up is sent here or never.
     if (remote?.state?.connected) {
       player.connected = true
       this.clearVoiceDeadline(true)
+      this.flushDeferredPlay()
       return
     }
 

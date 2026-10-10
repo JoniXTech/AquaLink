@@ -34,6 +34,12 @@ suppression flags that could get stuck and leave a player silent for good.
   answer below 500 ends the run, and so do 60 s without a new failure.
   Configurable with `nodeHealth.maxRestFailures` and
   `nodeHealth.restFailureWindow`.
+- A player restored while paused (failover, in-place rebuild) gets its track
+  together with the pause, `{ track, paused: true }`. The pause used to go
+  out on its own first, and a paused NodeLink player sends no playerUpdate,
+  so the track waited for one forever. When the deadline finds voice up, it
+  now sends a track still waiting for voice, and unpausing such a player
+  sends the track rather than `{ paused: false }` alone.
 
 ## Event changes
 
