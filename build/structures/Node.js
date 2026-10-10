@@ -151,9 +151,12 @@ class Node {
   // resume timeout. So the players stay while the link is retried at these
   // delays, each attempt allowed LINK_ATTEMPT_TIMEOUT, for
   // failoverOptions.linkGraceMs. An HTTP answer to the upgrade means the
-  // proxy is up and the node is not, and ends the wait at once.
+  // proxy is up and the node is not, and ends the wait once it repeats
+  // LINK_ANSWER_CONFIRM_MS after the first: a proxy that is itself starting
+  // answers 404 for a moment before its routes are loaded.
   static LINK_RETRY_DELAYS = Object.freeze([0, 250, 500, 1000, 2000])
   static LINK_ATTEMPT_TIMEOUT = 2000
+  static LINK_ANSWER_CONFIRM_MS = 1000
 
   constructor(aqua, connOptions, options = {}) {
     this.aqua = aqua
@@ -504,7 +507,15 @@ class Node {
       }
     })
     const since = Date.now()
-    const grace = { since, until: since + ms, attempt: 0, timer: null, gate }
+    const grace = {
+      since,
+      until: since + ms,
+      attempt: 0,
+      timer: null,
+      gate,
+      // When the first HTTP answer to an attempt came, 0 if none has.
+      answeredAt: 0
+    }
     grace.timer = setTimeout(() => {
       if (this._linkGrace !== grace) return
       this._emitDebug(`Link to ${this.name} still down after ${ms} ms`)
@@ -616,8 +627,14 @@ class Node {
   _scheduleLinkRetry() {
     const grace = this._linkGrace
     const delays = Node.LINK_RETRY_DELAYS
-    const delay = delays[Math.min(grace.attempt, delays.length - 1)]
-    const left = grace.until - Date.now()
+    const now = Date.now()
+    let delay = delays[Math.min(grace.attempt, delays.length - 1)]
+    // After a first HTTP answer, one attempt lands when it can confirm it.
+    if (grace.answeredAt) {
+      const confirmIn = grace.answeredAt + Node.LINK_ANSWER_CONFIRM_MS - now
+      delay = Math.min(delay, Math.max(0, confirmIn))
+    }
+    const left = grace.until - now
     if (delay >= left) return
     grace.attempt++
     if (this.aqua?.debugTrace) {
@@ -773,11 +790,16 @@ class Node {
             this._cleanup()
             settle(false, error)
             const status = _functions.upgradeStatus(error)
-            if (this._linkGrace && status !== null) {
+            const grace = this._linkGrace
+            if (grace && status !== null) {
+              const now = Date.now()
+              if (!grace.answeredAt) grace.answeredAt = now
+              const confirmed =
+                now - grace.answeredAt >= Node.LINK_ANSWER_CONFIRM_MS
               this._emitDebug(
-                `Link to ${this.name} answered ${status || 'non-101'}: the node is down`
+                `Link to ${this.name} answered ${status || 'non-101'}${confirmed ? ': the node is down' : ', moving if it repeats'}`
               )
-              this._moveLinkPlayers('node_down')
+              if (confirmed) this._moveLinkPlayers('node_down')
             }
             this._scheduleReconnect()
           }

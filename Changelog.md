@@ -78,9 +78,11 @@ suppression flags that could get stuck and leave a player silent for good.
   the reconnect itself only came 10 s later.
 - During the grace, reconnects run at once and then after 250 ms, 500 ms,
   1 s and 2 s, each allowed 2 s. An HTTP answer to the upgrade (502, 404,
-  ...) means the proxy is up and the node is not, and moves the players at
-  once. So does the end of the grace, or any close other than 1006 (1000
-  `Server shutdown` included). After that, reconnects follow the normal
+  ...) means the proxy is up and the node is not, and moves the players
+  once another answer comes at least 1 s after the first: a proxy that is
+  itself starting answers 404 for a moment before its routes load. The end
+  of the grace, or any close other than 1006 (1000 `Server shutdown`
+  included), moves them at once. After that, reconnects follow the normal
   schedule.
 - Those players' REST requests (voice updates, pause, volume, ...) wait in
   their guild's queue during the grace. They go out in order once the
