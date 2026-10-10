@@ -225,6 +225,9 @@ class CircularBuffer {
 class Player extends EventEmitter {
   static LOOP_MODES = LOOP_MODES
   static EVENT_HANDLERS = EVENT_HANDLERS
+  // How long a host's claim on a failed track lasts with no release and no
+  // new TrackStart; then aqualink advances as if it had been released.
+  static FAILED_TRACK_CLAIM_MS = 10000
 
   constructor(aqua, nodes, options) {
     super()
@@ -240,6 +243,12 @@ class Player extends EventEmitter {
     // A rejoin has left the voice channel on purpose and is joining again:
     // the bot's null voice state meanwhile is not a disconnect.
     this.voiceRejoining = false
+    // Where a track deferred until voice is up starts.
+    this._deferredStartTime = 0
+    // The track whose TrackError is being emitted, and a host's claim on a
+    // failed track (claimFailedTrack).
+    this._failedTrack = null
+    this._failedTrackClaim = null
     this.state = PLAYER_STATE.IDLE
     this.txId = 0
     this.isAutoplayEnabled = this.isAutoplay = false
@@ -594,6 +603,7 @@ class Player extends EventEmitter {
         !this._reconnecting
       ) {
         this._deferredStart = true
+        this._deferredStartTime = this.position
         if (this.aqua?.debugTrace) {
           this.aqua._trace('player.play.deferred', {
             guildId: this.guildId,
@@ -623,6 +633,7 @@ class Player extends EventEmitter {
         !this.connection?.endpoint
       ) {
         this._deferredStart = true
+        this._deferredStartTime = this.position
         if (this.aqua?.debugTrace) {
           this.aqua._trace('player.play.deferred', {
             guildId: this.guildId,
@@ -641,6 +652,7 @@ class Player extends EventEmitter {
       if (this.position > 0) updateData.position = this.position
 
       this._deferredStart = false
+      this._deferredStartTime = 0
       await this.batchUpdatePlayer(updateData, true).catch((err) => {
         if (!this.destroyed) _functions.emitAquaError(this.aqua, err)
       })
@@ -737,6 +749,7 @@ class Player extends EventEmitter {
 
     this.connected = this.playing = this.paused = this.isAutoplay = false
     this._deferredStart = false
+    this._deferredStartTime = 0
     this.state = PLAYER_STATE.DESTROYED
     this.autoplayRetries = 0
     if (!preserveReconnecting) this._reconnecting = false
@@ -895,6 +908,11 @@ class Player extends EventEmitter {
       ? Math.min(Math.max(position, 0), len)
       : Math.max(position, 0)
     this.position = clamped
+    // The node has no track yet: the deferred start goes out from here.
+    if (this._deferredStart) {
+      this._deferredStartTime = clamped
+      return this
+    }
     this.batchUpdatePlayer({ position: clamped }, true).catch((error) =>
       reportSuppressedError(this, 'player.seek', error, {
         guildId: this.guildId,
@@ -1275,6 +1293,9 @@ class Player extends EventEmitter {
 
   trackStart(_player, _track, payload = {}) {
     if (this.destroyed) return
+    // Something plays again: a claim on a failed track has nothing left to
+    // hold back.
+    this._dropFailedTrackClaim()
     const startedTrack = this.current || _track
     if (!startedTrack) return
     if (!this.current) this.current = startedTrack
@@ -1304,6 +1325,29 @@ class Player extends EventEmitter {
     const isFailure = reason === 'loadFailed'
     const isCleanup = reason === 'cleanup'
     const isReplaced = reason === 'replaced'
+
+    // The end of a failed track a host claimed: the host is retrying it, so
+    // nothing advances until it releases the claim. `current` is left alone,
+    // since the retry may already have set it.
+    const claim = this._failedTrackClaim
+    if (
+      claim &&
+      !claim.held &&
+      !isReplaced &&
+      Track.same(claim.track, payload?.track || claim.track)
+    ) {
+      claim.held = true
+      if (!claim.track.oneShot) this.previousTracks.push(claim.track)
+      if (this.aqua?.debugTrace) {
+        this.aqua._trace('player.failedTrack.held', {
+          guildId: this.guildId,
+          reason
+        })
+      }
+      this.aqua.emit(AqualinkEvents.TrackEnd, this, claim.track, reason)
+      return
+    }
+
     const oneShot = !!track?.oneShot
 
     if (track && !oneShot) this.previousTracks.push(track)
@@ -1316,17 +1360,7 @@ class Player extends EventEmitter {
     // QueueEnd names the track it came after.
     if (isFailure || isCleanup) {
       this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
-      if (!this.queue.size || isCleanup) {
-        // A failed one-shot must not wipe the history it stayed out of.
-        if (oneShot && !isCleanup) this.playing = false
-        else
-          this.clearData({
-            preserveTracks: this._reconnecting || this._resuming
-          })
-        this.aqua.emit(AqualinkEvents.QueueEnd, this, track)
-      } else {
-        await this.play()
-      }
+      await this._advanceAfterFailure(track, isCleanup)
       return
     }
 
@@ -1356,10 +1390,93 @@ class Player extends EventEmitter {
     }
   }
 
+  // What follows a failed or cleaned-up track: the next one, or the end of
+  // the queue.
+  async _advanceAfterFailure(track, isCleanup = false) {
+    if (!this.queue.size || isCleanup) {
+      // A failed one-shot must not wipe the history it stayed out of.
+      if (track?.oneShot && !isCleanup) this.playing = false
+      else
+        this.clearData({
+          preserveTracks: this._reconnecting || this._resuming
+        })
+      this.aqua.emit(AqualinkEvents.QueueEnd, this, track)
+    } else {
+      await this.play()
+    }
+  }
+
+  // No stop(): the node ends a failed track itself (NodeLink with loadFailed
+  // right away, Lavalink when the track next terminates), and some
+  // exceptions leave it playing. A stop here was one more request racing
+  // the host's retry and aqualink's advance. A host that retries the track
+  // claims it from this emit (claimFailedTrack).
   trackError(_player, track, payload) {
     if (this.destroyed) return
-    this.aqua.emit(AqualinkEvents.TrackError, this, track, payload)
-    this.stop()
+    this._failedTrack = track || null
+    try {
+      this.aqua.emit(AqualinkEvents.TrackError, this, track, payload)
+    } finally {
+      this._failedTrack = null
+    }
+  }
+
+  // Lets the host own a failed track, called from inside its TrackError
+  // emit. The track's end then emits TrackEnd but neither advances nor
+  // emits QueueEnd, so a retry and aqualink's own advance do not race.
+  // Returns release(): it runs the advance that was held back (the next
+  // track, or the end of the queue), or, if the end has not arrived yet,
+  // lets it advance as usual. The claim lapses at the next TrackStart, with
+  // nothing to advance, or after FAILED_TRACK_CLAIM_MS, which advances as if
+  // released. Null outside that track's TrackError emit.
+  claimFailedTrack(track) {
+    const failed = this._failedTrack
+    if (this.destroyed || !failed || !track) return null
+    if (track !== failed && !Track.same(track, failed)) return null
+    this._dropFailedTrackClaim()
+    const claim = { track: failed, held: false, timer: null }
+    claim.timer = this._createTimer(() => {
+      claim.timer = null
+      this._releaseFailedTrack(claim, 'timeout')
+    }, Player.FAILED_TRACK_CLAIM_MS)
+    this._failedTrackClaim = claim
+    if (this.aqua?.debugTrace) {
+      this.aqua._trace('player.failedTrack.claim', { guildId: this.guildId })
+    }
+    return () => this._releaseFailedTrack(claim, 'release')
+  }
+
+  // A released claim advances the way a failure does whatever the node's
+  // end reason was: on Lavalink a failed track can end as 'finished', and
+  // track loop must not replay what the host just gave up on.
+  _releaseFailedTrack(claim, how) {
+    if (this._failedTrackClaim !== claim) return
+    this._dropFailedTrackClaim()
+    if (this.aqua?.debugTrace) {
+      this.aqua._trace('player.failedTrack.release', {
+        guildId: this.guildId,
+        how,
+        held: claim.held
+      })
+    }
+    if (this.destroyed || !claim.held) return
+    if (this.shouldDeleteMessage && !this._reconnecting && !this._resuming)
+      _functions.safeDel(this.nowPlayingMessage)
+    this.current = null
+    this._advanceAfterFailure(claim.track).catch((error) =>
+      _functions.emitAquaError(this.aqua, error)
+    )
+  }
+
+  _dropFailedTrackClaim() {
+    const claim = this._failedTrackClaim
+    if (!claim) return
+    this._failedTrackClaim = null
+    if (claim.timer) {
+      clearTimeout(claim.timer)
+      this._pendingTimers?.delete(claim.timer)
+      claim.timer = null
+    }
   }
 
   trackStuck(_player, track, payload) {
