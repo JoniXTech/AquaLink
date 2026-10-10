@@ -1610,7 +1610,6 @@ class Player extends EventEmitter {
   }
 
   send(data) {
-    this.connection?._bumpGeneration?.('gateway_voice_state')
     try {
       if (this.aqua?.queueVoiceStateUpdate) {
         return this.aqua.queueVoiceStateUpdate(data)

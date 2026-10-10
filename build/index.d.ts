@@ -975,7 +975,8 @@ declare module 'aqualink' {
     _lastSentVoiceKey: string
     _voiceInFlightKey: string
     _lastVoiceDataUpdate: number
-    _generationAt: number
+    /** The generation whose credentials the node last accepted in a voice PATCH. */
+    _patchedGeneration: number
     _selfLeave: (() => void) | null
     _stateFlags: number
     _regionMigrationAttempted: boolean

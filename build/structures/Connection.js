@@ -150,9 +150,10 @@ class Connection {
     this._reconnectTimer = null
     this._lastVoiceDataUpdate = 0
     this._consecutiveFailures = 0
-    // Which voice attempt is current, and when it last moved on.
+    // Which voice attempt is current, and the one whose credentials the
+    // node last accepted in a voice PATCH.
     this.generation = 0
-    this._generationAt = 0
+    this._patchedGeneration = -1
 
     this._voiceFlushTimer = null
     this._pendingUpdate = null
@@ -196,6 +197,7 @@ class Connection {
     this._clearPendingUpdate()
     this._clearReconnectTimer()
     this._stateGeneration++
+    this._bumpGeneration('fresh_join')
 
     this.sessionId = null
     this.channelId = null
@@ -239,12 +241,13 @@ class Connection {
     return this._recovery.setServerUpdate(data)
   }
 
-  // Bumped by every gateway voice state send (op 4), every credential change
-  // from Discord, and every adopt or carried-over set of credentials. A
-  // voice close is matched against it (see PlayerLifecycle.socketClosed).
+  // Bumped whenever the socket the node should hold changes or is given up:
+  // every credential change from Discord, every adopt or carried-over set of
+  // credentials, and a fresh join dropping its credentials. A plain op 4
+  // does not bump: it leaves the node's socket as it is. A voice close is
+  // matched against it (see PlayerLifecycle.socketClosed).
   _bumpGeneration(reason) {
     this.generation++
-    this._generationAt = Date.now()
     if (this._aqua?.debugTrace) {
       this._aqua._trace('connection.generation', {
         guildId: this._guildId,
