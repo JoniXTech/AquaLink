@@ -68,6 +68,16 @@ suppression flags that could get stuck and leave a player silent for good.
 - `playerReconnect`: now typed (`PlayerReconnectData`). It carries `reason`
   for a rejoin, and `leave_rejoin` when the rejoin leaves the channel to
   join it again.
+- `trackError` no longer stops the player. The node ends a failed track
+  itself (NodeLink with `loadFailed`, Lavalink when the track next ends),
+  and some exceptions leave the track playing, which the stop used to kill.
+- New `player.claimFailedTrack(track)`, for a host that retries a failed
+  track. Called from the `trackError` listener, it makes the track's end
+  emit `trackEnd` without playing the next track or emitting `queueEnd`,
+  so the retry doesn't race aqualink's own advance. It returns `release()`,
+  which runs that advance when the host gives up. The claim lapses at the
+  next `trackStart`, or advances on its own after
+  `Player.FAILED_TRACK_CLAIM_MS` (10 s).
 - `playerReconnected` is no longer emitted. A failed voice rejoins the same
   player instead of building a new one.
 

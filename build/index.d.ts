@@ -324,6 +324,8 @@ declare module 'aqualink' {
       readonly QUEUE: 2
     }
     static readonly EVENT_HANDLERS: Record<string, string>
+    /** How long a claim on a failed track lasts before it advances on its own. */
+    static FAILED_TRACK_CLAIM_MS: number
 
     // Core Properties
     aqua: Aqua
@@ -466,6 +468,22 @@ declare module 'aqualink' {
      * Stops the playback
      */
     stop(): Player
+
+    /**
+     * Takes over a failed track, for a host that will retry it. Call it
+     * synchronously from the `trackError` listener for that track. The
+     * track's end still emits `trackEnd`, but aqualink neither plays the next
+     * track nor emits `queueEnd` for it.
+     *
+     * Returns `release()`, to call when the host gives up retrying: it runs
+     * the advance aqualink held back (the next track, or `queueEnd`), or,
+     * before the end has arrived, lets it advance as usual. The claim lapses
+     * at the next `trackStart` (nothing advances) or after
+     * `Player.FAILED_TRACK_CLAIM_MS` (it advances as if released).
+     *
+     * Returns null when called outside that track's `trackError` emit.
+     */
+    claimFailedTrack(track: Track): (() => void) | null
 
     /**
      * Sets the player volume
