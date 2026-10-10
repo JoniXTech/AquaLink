@@ -529,13 +529,18 @@ class PlayerLifecycle {
     )
       return
     player._deferredStart = false
+    // The start time play() was given. player.position is the node's by
+    // now: the playerUpdate that brings voice up overwrites it with 0.
+    const startTime = player._deferredStartTime || 0
+    player._deferredStartTime = 0
+    player.position = startTime
     const updateData = {
       track: { encoded: player.current.track },
       paused: player.paused
     }
     if (player.current.userData)
       updateData.track.userData = player.current.userData
-    if (player.position > 0) updateData.position = player.position
+    if (startTime > 0) updateData.position = startTime
     if (player.aqua?.debugTrace) {
       player.aqua._trace('player.play.deferred.flush', {
         guildId: player.guildId,

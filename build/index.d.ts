@@ -371,6 +371,7 @@ declare module 'aqualink' {
     restored: RestoreInfo | null
     _resuming: boolean
     _reconnecting: boolean
+    _deferredStartTime: number
     previousIdentifiers: Set<string>
     self_deaf: boolean
     self_mute: boolean

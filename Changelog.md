@@ -47,6 +47,12 @@ suppression flags that could get stuck and leave a player silent for good.
   `playerMove` to `null`, no null-channel grace. `player.voiceRejoining` is
   true from the leave until voice is up; a host that ends its player when
   the bot leaves voice should skip that while it is set.
+- A restored, migrated or rebuilt track starts at its position in the same
+  update as the track. It used to get a separate seek after its TrackStart
+  as well, or (migration, rebuild) start from 0 and rely on that seek. A
+  track waiting for voice keeps its own start time, which the playerUpdate
+  that brings voice up can no longer reset to 0, and a seek before it
+  starts moves that start rather than going to a node with no track.
 
 ## Event changes
 

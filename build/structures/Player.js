@@ -240,6 +240,8 @@ class Player extends EventEmitter {
     // A rejoin has left the voice channel on purpose and is joining again:
     // the bot's null voice state meanwhile is not a disconnect.
     this.voiceRejoining = false
+    // Where a track deferred until voice is up starts.
+    this._deferredStartTime = 0
     this.state = PLAYER_STATE.IDLE
     this.txId = 0
     this.isAutoplayEnabled = this.isAutoplay = false
@@ -594,6 +596,7 @@ class Player extends EventEmitter {
         !this._reconnecting
       ) {
         this._deferredStart = true
+        this._deferredStartTime = this.position
         if (this.aqua?.debugTrace) {
           this.aqua._trace('player.play.deferred', {
             guildId: this.guildId,
@@ -623,6 +626,7 @@ class Player extends EventEmitter {
         !this.connection?.endpoint
       ) {
         this._deferredStart = true
+        this._deferredStartTime = this.position
         if (this.aqua?.debugTrace) {
           this.aqua._trace('player.play.deferred', {
             guildId: this.guildId,
@@ -641,6 +645,7 @@ class Player extends EventEmitter {
       if (this.position > 0) updateData.position = this.position
 
       this._deferredStart = false
+      this._deferredStartTime = 0
       await this.batchUpdatePlayer(updateData, true).catch((err) => {
         if (!this.destroyed) _functions.emitAquaError(this.aqua, err)
       })
@@ -737,6 +742,7 @@ class Player extends EventEmitter {
 
     this.connected = this.playing = this.paused = this.isAutoplay = false
     this._deferredStart = false
+    this._deferredStartTime = 0
     this.state = PLAYER_STATE.DESTROYED
     this.autoplayRetries = 0
     if (!preserveReconnecting) this._reconnecting = false
@@ -895,6 +901,11 @@ class Player extends EventEmitter {
       ? Math.min(Math.max(position, 0), len)
       : Math.max(position, 0)
     this.position = clamped
+    // The node has no track yet: the deferred start goes out from here.
+    if (this._deferredStart) {
+      this._deferredStartTime = clamped
+      return this
+    }
     this.batchUpdatePlayer({ position: clamped }, true).catch((error) =>
       reportSuppressedError(this, 'player.seek', error, {
         guildId: this.guildId,

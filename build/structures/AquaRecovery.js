@@ -192,11 +192,12 @@ class AquaRecovery {
           // Paused with the track, not by a later op: a pause sent before
           // voice is up leaves the deferred track waiting for a playerUpdate
           // a paused player never sends.
+          // Paused and at its position in the same update as the track.
           await player.play(undefined, {
             oneShot: current.oneShot,
-            paused: !!state.paused
+            paused: !!state.paused,
+            startTime: state.position || 0
           })
-          this.seekAfterTrackStart(player, id, state.position, 50)
         }
         return player
       } finally {
@@ -550,29 +551,6 @@ class AquaRecovery {
     })
   }
 
-  seekAfterTrackStart(player, guildId, position, delay = 50) {
-    if (!player || !guildId || !(position > 0)) return
-
-    let timeoutId = null
-    const cleanup = () => {
-      if (timeoutId) clearTimeout(timeoutId)
-      this.aqua.off(AqualinkEvents.TrackStart, seekOnce)
-      player.removeListener('destroy', cleanup)
-    }
-
-    const seekOnce = (startedPlayer) => {
-      if (startedPlayer.guildId !== guildId) return
-      cleanup()
-      this._functions.unrefTimeout(() => player.seek?.(position), delay)
-    }
-
-    timeoutId = setTimeout(cleanup, 30000)
-    if (timeoutId.unref) timeoutId.unref()
-
-    this.aqua.on(AqualinkEvents.TrackStart, seekOnce)
-    player.once('destroy', cleanup)
-  }
-
   async restorePlayerState(newPlayer, state) {
     // Run in order, not together: play() resolves its track before it sends,
     // so a pause started alongside it reached the node first and play then
@@ -611,18 +589,13 @@ class AquaRecovery {
       newPlayer.queue.add(...state.queue)
     if (state.current && this.aqua.failoverOptions.preservePosition) {
       if (this.aqua.failoverOptions.resumePlayback) {
-        // Paused with the track: see rebuildPlayer.
+        // Paused and positioned with the track: see rebuildPlayer.
         ops.push(() =>
           newPlayer.play(state.current, {
             oneShot: state.current.oneShot,
-            paused: !!state.paused
+            paused: !!state.paused,
+            startTime: state.position || 0
           })
-        )
-        this.seekAfterTrackStart(
-          newPlayer,
-          newPlayer.guildId,
-          state.position,
-          50
         )
       } else if (newPlayer.queue?.add) {
         newPlayer.queue.add(state.current)
@@ -769,7 +742,6 @@ class AquaRecovery {
             else player.volume = p.vol
           }
 
-          this.seekAfterTrackStart(player, gId, p.p, 100)
           await player.play(undefined, {
             startTime: p.p,
             paused: p.pa,

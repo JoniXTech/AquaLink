@@ -1161,10 +1161,6 @@ class Aqua extends EventEmitter {
     return this._recovery.createPlayerOnNode(targetNode, state)
   }
 
-  _seekAfterTrackStart(player, guildId, position, delay = 50) {
-    return this._recovery.seekAfterTrackStart(player, guildId, position, delay)
-  }
-
   async _restorePlayerState(newPlayer, state) {
     return this._recovery.restorePlayerState(newPlayer, state)
   }
