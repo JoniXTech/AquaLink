@@ -21,12 +21,20 @@ suppression flags that could get stuck and leave a player silent for good.
   connects. After that: `reconnectionFailed`, `socketClosed`, destroy.
 - An unchanged voice update is now re-sent after a close, rather than being
   deduplicated, because the node takes it as "reconnect".
+- When the deadline's request to the node gets no answer or a 5xx, no
+  attempt is spent. After two in a row the player moves to another usable
+  node; with none, it waits rather than being destroyed.
+- The 5 s check after a move only re-sends a lost voice update. A node that
+  holds the voice but is still connecting is left to the normal deadline.
 
 ## Event changes
 
 - `socketClosed`: the payload is typed as `VoiceClosePayload`. When the
   deadline gives up, `code` is `null` and `timeout` is `true`. Every
-  `socketClosed` aqualink emits is now followed by destroy.
+  `socketClosed` aqualink emits is now followed by destroy, and carries a
+  stable `cause`: `no_channel`, `disconnected` (4014/4022),
+  `rejoins_exhausted` (a close with no rejoins left) or `voice_deadline`.
+  `code` and `reason` are left as the node sent them.
 - `reconnectionFailed`: emitted once, when recovery gives up, with
   `retriesLeft: 0` and `reason` (`voice_deadline` or `rejoins_exhausted`).
   Typed as `ReconnectionFailedData`.

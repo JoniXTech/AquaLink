@@ -322,20 +322,23 @@ class PlayerLifecycle {
   // Ends the player: SocketClosed then destroy, so "socketClosed ends the
   // player" holds on every path. ReconnectionFailed comes first when the
   // rejoins ran out, as opposed to a close that leaves nothing to rejoin.
-  _giveUp(reason, payload, error = null) {
+  // `cause` says why aqualink ended it, apart from the close's own reason:
+  // 'no_channel', 'disconnected', 'rejoins_exhausted' or 'voice_deadline'.
+  _giveUp(cause, payload, error = null) {
     const player = this.player
     if (player.destroyed) return
+    const closed = { ...payload, cause }
     if (error) {
       player.aqua?.emit?.(AqualinkEvents.ReconnectionFailed, player, {
-        code: payload?.code ?? null,
+        code: closed.code ?? null,
         error,
         fresh: true,
-        payload,
-        reason,
+        payload: closed,
+        reason: cause,
         retriesLeft: 0
       })
     }
-    player.aqua?.emit?.(AqualinkEvents.SocketClosed, player, payload)
+    player.aqua?.emit?.(AqualinkEvents.SocketClosed, player, closed)
     player.destroy()
   }
 
@@ -345,6 +348,9 @@ class PlayerLifecycle {
   // credential swap (NodeLink closes the replaced connection with a 4014)
   // or this player's own rejoin all close a socket nobody uses any more.
   // A real failure caught in that window is left to the voice deadline.
+  // The voice PATCH half of the window is only there because NodeLink
+  // reports a replaced connection as a Discord 4014; narrow it once NodeLink
+  // marks those (~/.claude/plans/nodelink-voice-close-honesty.md).
   async socketClosed(_player, _track, payload) {
     const player = this.player
     if (player.destroyed) return

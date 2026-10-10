@@ -1770,6 +1770,13 @@ declare module 'aqualink' {
     | 'ended' // it ended with nothing after it: the player idles
     | 'idle' // nothing played when saved, nothing plays now
 
+  /** Why aqualink ended the player. Stable: hosts may key on it. */
+  export type VoiceCloseCause =
+    | 'no_channel'
+    | 'disconnected'
+    | 'rejoins_exhausted'
+    | 'voice_deadline'
+
   /** A voice close, or (with `timeout`) a voice that never came up. */
   export interface VoiceClosePayload {
     op?: 'event'
@@ -1780,6 +1787,7 @@ declare module 'aqualink' {
     reason: string
     byRemote: boolean
     timeout?: true
+    cause: VoiceCloseCause
   }
 
   export interface ReconnectionFailedData {
