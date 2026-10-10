@@ -133,6 +133,11 @@ suppression flags that could get stuck and leave a player silent for good.
 - `nodeFailover` is emitted only when players are actually being moved: not
   for a node with no players, nor when there is no other node to move them
   to.
+- `trackStart` no longer sets `player.paused` to false. A paused player that
+  is moved, rebuilt, restored or adopted gets its track with `paused: true`;
+  NodeLink still starts it (TrackStart) and then holds it, and the clear
+  left the flag saying "playing" for a track that was paused. `play()` and
+  `pause()` set the flag to what they send.
 - `playerReconnected` is no longer emitted. A failed voice rejoins the same
   player instead of building a new one.
 
