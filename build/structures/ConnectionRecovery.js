@@ -286,7 +286,7 @@ class ConnectionRecovery {
       }
 
       conn._requestVoiceState()
-      // Anything that moved the voice on while the resume was out (a new
+      // Anything that moved the voice on while the resume was out (a fresh
       // join, new credentials) supersedes the re-send below.
       const generation = conn.generation
       const resumed = await this.attemptResume().catch((error) => {
@@ -349,6 +349,10 @@ class ConnectionRecovery {
         `REST interface unavailable (guild=${conn._guildId}, sessionId=${conn.sessionId || 'none'})`
       )
 
+    // The attempt whose credentials this carries; a close is matched
+    // against the attempt the node last accepted (PlayerLifecycle.socketClosed).
+    const generation = conn.generation
+    const credentials = !!payload?.data?.voice?.token
     try {
       if (conn._aqua?.debugTrace) {
         conn._aqua._trace('connection.update.send', {
@@ -360,6 +364,7 @@ class ConnectionRecovery {
         })
       }
       await conn._rest.updatePlayer(payload)
+      if (credentials) conn._patchedGeneration = generation
       // The adopted player's voice now points at this gateway session.
       const guard = conn._player?._adoptGuard
       if (guard && payload?.data?.voice?.sessionId) guard.sent = true

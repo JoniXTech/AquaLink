@@ -12,8 +12,8 @@ const DEADLINE_RECHECK_MS = 5000
 const UNREACHABLE_BEFORE_MOVE = 2
 
 class PlayerLifecycle {
-  // How long a voice close waits before it is acted on, and how close to a
-  // voice change it may arrive and still be taken for the old connection's.
+  // How long a voice close waits before it is acted on, so that a voice
+  // change that was already under way when it arrived can show itself.
   static CLOSE_GRACE_MS = 2000
   // How long a rejoin waits for Discord's new credentials before it leaves
   // the channel for real, and how long that leave waits for Discord to
@@ -444,21 +444,22 @@ class PlayerLifecycle {
     player.destroy()
   }
 
-  // A voice close is acted on only if it belongs to the current voice
-  // attempt. One that arrives within the grace of a new generation, on
-  // either side, is the old connection's: Discord closes the old voice
-  // socket when the bot is moved (a real 4014, which can reach us before or
-  // after the gateway's voice state update), and an adopt handover or this
-  // player's own rejoin do the same. A real failure caught in that window
-  // is left to the voice deadline. A voice PATCH alone opens no window: the
-  // node replaces its socket without reporting a close.
+  // A voice close is acted on only if it belongs to the socket of the
+  // current voice attempt: one the node had accepted the credentials for
+  // when the close arrived, with nothing new by the end of the grace. The
+  // node replaces its socket on new credentials without reporting a close,
+  // so a close after that PATCH is the current socket's. Before it, the
+  // close is the previous socket's: Discord closes the old socket when the
+  // bot is moved (a real 4014), and an adopt handover or this player's own
+  // rejoin do the same. A move's 4014 can also arrive before the gateway's
+  // voice update; the grace waits for that update to bump the generation.
   async socketClosed(_player, _track, payload) {
     const player = this.player
     if (player.destroyed) return
     const conn = player.connection
     const code = payload?.code
-    const receivedAt = Date.now()
     const generation = conn?.generation
+    const current = !!conn && conn._patchedGeneration === generation
     const grace = PlayerLifecycle.CLOSE_GRACE_MS
 
     // Not player._delay: destroy clears those timers, and this one has to
@@ -469,9 +470,8 @@ class PlayerLifecycle {
     })
     if (player.destroyed || !conn || player.connection !== conn) return
 
-    const generationAt = conn._generationAt || 0
     let action
-    if (conn.generation !== generation || generationAt >= receivedAt - grace) {
+    if (!current || conn.generation !== generation) {
       action = 'old_connection'
     } else if (!player.voiceChannel || conn.isWaitingForDisconnect) {
       action = 'no_channel'
@@ -493,6 +493,8 @@ class PlayerLifecycle {
         action,
         generation,
         currentGeneration: conn.generation,
+        patchedGeneration: conn._patchedGeneration,
+        current,
         rejoins: this._rejoins
       })
     }

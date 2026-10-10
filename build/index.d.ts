@@ -470,18 +470,24 @@ declare module 'aqualink' {
     stop(): Player
 
     /**
-     * Takes over a failed track, for a host that will retry it. Call it
-     * synchronously from the `trackError` listener for that track. The
+     * Takes over a failed or stuck track, for a host that will retry it. Call
+     * it synchronously from the `trackError` or `trackStuck` listener for that
+     * track; a claimed stuck track is not stopped. The
      * track's end still emits `trackEnd`, but aqualink neither plays the next
      * track nor emits `queueEnd` for it.
      *
      * Returns `release()`, to call when the host gives up retrying: it runs
      * the advance aqualink held back (the next track, or `queueEnd`), or,
-     * before the end has arrived, lets it advance as usual. The claim lapses
+     * before the end has arrived, lets it advance as usual (a stuck track is
+     * stopped then). The claim lapses
      * at the next `trackStart` (nothing advances) or after
-     * `Player.FAILED_TRACK_CLAIM_MS` (it advances as if released).
+     * `Player.FAILED_TRACK_CLAIM_MS` (it advances as if released). A `play()`
+     * of the claimed track (the retry) stops that timer: the claim then lasts
+     * until the retry starts or fails. A later `trackError` ends the claim:
+     * claim again there to keep owning the track.
      *
-     * Returns null when called outside that track's `trackError` emit.
+     * Returns null when called outside that track's `trackError` or
+     * `trackStuck` emit.
      */
     claimFailedTrack(track: Track): (() => void) | null
 
@@ -573,10 +579,11 @@ declare module 'aqualink' {
 
     // Utility Methods
     send(data: Record<string, unknown>): void
+    /** Resolves false when an immediate update failed (it is reported as an error). */
     batchUpdatePlayer(
       data: UpdatePlayerOptions['data'],
       immediate?: boolean
-    ): Promise<void>
+    ): Promise<boolean | void>
 
     // Internal Methods
     _parseLoop(loop: unknown): LoopMode
@@ -968,7 +975,8 @@ declare module 'aqualink' {
     _lastSentVoiceKey: string
     _voiceInFlightKey: string
     _lastVoiceDataUpdate: number
-    _generationAt: number
+    /** The generation whose credentials the node last accepted in a voice PATCH. */
+    _patchedGeneration: number
     _selfLeave: (() => void) | null
     _stateFlags: number
     _regionMigrationAttempted: boolean

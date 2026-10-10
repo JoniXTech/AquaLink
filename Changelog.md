@@ -6,12 +6,16 @@ Voice closes are now decided by one number, the connection's voice
 `generation`, plus a per-player voice deadline, instead of a set of
 suppression flags that could get stuck and leave a player silent for good.
 
-- A voice close waits 2 s. If the voice generation moved (a new join, new
-  credentials from Discord, an adopt) within 2 s on either side of it, it was
-  the old connection's and is ignored; that covers Discord's real 4014 to
-  the old socket when the bot is moved. So are closes from a node the
-  player has moved off. A voice PATCH alone no longer counts: NodeLink no
-  longer reports a replaced socket as a 4014.
+- A voice close waits 2 s. It belongs to the current voice socket only if
+  it arrived after the node had accepted the voice PATCH for the current
+  voice generation, and no new generation started during those 2 s.
+  Otherwise it was the old socket's and is ignored: Discord's real 4014 to
+  the old socket when the bot is moved, an adopt handover, this player's
+  own rejoin. So are closes from a node the player has moved off. The
+  generation moves on new credentials from Discord, carried-over or adopted
+  credentials, and a fresh join; a plain op 4 no longer moves it. A close
+  right after a voice change used to be ignored for 2 s whatever socket it
+  came from, so a migrated player's 4006 waited for the voice deadline.
 - A current close: no voice channel, or 4014/4022, ends the player
   (`socketClosed`, then destroy). 4015 and the node's own codes are left to
   the server, which reconnects itself. Anything else (4006, 4009, ...) drops
@@ -77,7 +81,12 @@ suppression flags that could get stuck and leave a player silent for good.
   so the retry doesn't race aqualink's own advance. It returns `release()`,
   which runs that advance when the host gives up. The claim lapses at the
   next `trackStart`, or advances on its own after
-  `Player.FAILED_TRACK_CLAIM_MS` (10 s).
+  `Player.FAILED_TRACK_CLAIM_MS` (10 s). A `play()` of the claimed track
+  (the retry) stops that timer, so a slow retry is not raced, and the next
+  failure ends the claim unless the host claims again. A stuck track can be
+  claimed the same way from the `trackStuck` listener: claimed, it isn't
+  stopped (the retry replaces it), and if the claim is released or times
+  out before the track ends, it is stopped then.
 - `playerReconnected` is no longer emitted. A failed voice rejoins the same
   player instead of building a new one.
 
