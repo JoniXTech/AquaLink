@@ -210,6 +210,10 @@ class Node {
     // 0 until the first stats frame, so a node that has never reported is
     // scored as an unknown rather than as an idle one.
     this.statsUpdatedAt = 0
+    // REST requests in a row the node did not answer, and when the last one
+    // failed. Read by Aqua#getNodeHealth.
+    this.restFailures = 0
+    this.restFailureAt = 0
 
     this._clientName = `Aqua/${this.aqua.version} https://github.com/ToddyTheNoobDud/AquaLink`
     this._headers = this._buildHeaders()

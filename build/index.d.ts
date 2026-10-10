@@ -275,6 +275,9 @@ declare module 'aqualink' {
     stats: NodeStats
     /** `Date.now()` of the last stats frame, 0 if none has arrived. */
     statsUpdatedAt: number
+    /** REST requests in a row this node did not answer (no response or 5xx). */
+    restFailures: number
+    restFailureAt: number
     readonly score: number
     readonly health: NodeHealth | null
     /** Operator preference. Higher is less preferred; 0 is neutral. */
@@ -2045,6 +2048,10 @@ declare module 'aqualink' {
     maxMemoryUsage?: number
     warnCpuLoad?: number
     warnMemoryUsage?: number
+    /** REST requests in a row the node did not answer before it is critical. Default 3. */
+    maxRestFailures?: number
+    /** How long a run of REST failures keeps the node critical, in ms. Default 60000. */
+    restFailureWindow?: number
   }
 
   export interface EjectResult {

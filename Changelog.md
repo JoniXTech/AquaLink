@@ -26,6 +26,12 @@ suppression flags that could get stuck and leave a player silent for good.
   node; with none, it waits rather than being destroyed.
 - The 5 s check after a move only re-sends a lost voice update. A node that
   holds the voice but is still connecting is left to the normal deadline.
+- Node health counts REST failures. Three requests in a row that get no
+  answer or a 5xx make a node `critical` (reason `rest failing: N in a row`),
+  which keeps new players off it while another usable node exists. Any
+  answer below 500 ends the run, and so do 60 s without a new failure.
+  Configurable with `nodeHealth.maxRestFailures` and
+  `nodeHealth.restFailureWindow`.
 
 ## Event changes
 

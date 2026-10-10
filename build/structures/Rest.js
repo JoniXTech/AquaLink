@@ -517,6 +517,32 @@ class Rest {
     }
   }
 
+  // A run of requests the node's REST did not answer (no response, a
+  // timeout, a 5xx) is what node health reads (Aqua#getNodeHealth). Any
+  // answer below 500, a 404 or 429 included, ends the run. A request the
+  // caller aborted says nothing about the node.
+  _noteResult(error, signal) {
+    const node = this.node
+    if (!node || signal?.aborted) return
+    const status = error
+      ? error.statusCode || error.response?.statusCode || 0
+      : 200
+    if (status && status < 500) {
+      node.restFailures = 0
+      return
+    }
+    node.restFailures = (node.restFailures || 0) + 1
+    node.restFailureAt = Date.now()
+    if (this.aqua?.debugTrace) {
+      this.aqua._trace('node.rest.failure', {
+        node: node.name,
+        run: node.restFailures,
+        status: status || null,
+        error: error?.message || null
+      })
+    }
+  }
+
   async _send(method, endpoint, body, signal, timeout) {
     const url = `${this.baseUrl}${endpoint}`
     const payload =
@@ -534,7 +560,11 @@ class Rest {
         this.useHttp2 && payloadLen >= HTTP2_THRESHOLD
           ? await this._h2Request(method, endpoint, headers, payload, signal, timeout)
           : await this._h1Request(method, url, headers, payload, signal, timeout)
+      this._noteResult(null, signal)
       return resp
+    } catch (error) {
+      this._noteResult(error, signal)
+      throw error
     } finally {
       if (this.calls > 0) this.calls--
       // destroy() may have run while this was in flight.
