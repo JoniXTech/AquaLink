@@ -138,8 +138,10 @@ class Node {
   // nothing was ever written. Ping every interval; the socket is dead after
   // two intervals with no pong and no message, or once the node has sent
   // stats and then sent none for STATS_TIMEOUT (Lavalink sends them every
-  // 60 s, NodeLink every 30 s).
-  static HEARTBEAT_INTERVAL = 15000
+  // 60 s, NodeLink every 30 s). At 15 s a half-open link went unnoticed for
+  // up to 30 s; a false kill now costs only a reconnect inside the link
+  // grace, not a move.
+  static HEARTBEAT_INTERVAL = 5000
   static STATS_TIMEOUT = 180000
   // How long a dead socket's close may take before the close is run here.
   static DEAD_CLOSE_GRACE = 1000
@@ -905,12 +907,23 @@ class Node {
     const canPing = typeof ws.ping === 'function'
     this._lastAliveAt = Date.now()
     this._lastStatsAt = 0
+    let lastTick = this._lastAliveAt
     this._heartbeatTimer = setInterval(() => {
       if (this.ws !== ws || ws.readyState !== WS_STATES.OPEN) return
       const now = Date.now()
+      // A late tick means this process stalled, not the node: the pong can
+      // be waiting behind the stall, read only after this timer has run.
+      const late = now - lastTick > 1.5 * interval
+      lastTick = now
       const silent = now - this._lastAliveAt
       const statsAge = this._lastStatsAt ? now - this._lastStatsAt : 0
-      if (canPing && silent >= 2 * interval) {
+      if (late) {
+        if (canPing) {
+          try {
+            ws.ping()
+          } catch {}
+        }
+      } else if (canPing && silent >= 2 * interval) {
         this._closeDeadSocket(ws, onClose, `no reply for ${silent} ms`)
       } else if (statsAge >= Node.STATS_TIMEOUT) {
         this._closeDeadSocket(ws, onClose, `no stats for ${statsAge} ms`)

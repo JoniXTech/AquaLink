@@ -94,6 +94,10 @@ suppression flags that could get stuck and leave a player silent for good.
   credentials and a voice handover mid-song.
 - A resume after the node restarted (`resumed: false`) is handled as before,
   and the grace doesn't also move those players.
+- The node heartbeat pings every 5 s instead of 15 s, so a half-open link
+  is noticed within about 10 s rather than 30 s. A heartbeat tick that runs
+  late (this process stalled) no longer counts against the node, since its
+  pong can still be waiting to be read.
 
 - `socketClosed`: the payload is typed as `VoiceClosePayload`. When the
   deadline gives up, `code` is `null` and `timeout` is `true`. Every
