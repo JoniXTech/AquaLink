@@ -198,6 +198,13 @@ declare module 'aqualink' {
     _cleanupNode(nodeId: string): void
     _storeBrokenPlayers(node: Node): Promise<void>
     _rebuildBrokenPlayers(node: Node): Promise<void>
+    /** The node lost this guild's player; rebuild it there with fresh voice. Once per loss. */
+    _recreateLostPlayer(
+      guildId: string,
+      node: Node | null,
+      reason: string,
+      code?: number | null
+    ): boolean | undefined
     _rebuildPlayer(
       brokenState: BrokenPlayerState,
       targetNode: Node
@@ -593,6 +600,7 @@ declare module 'aqualink' {
     _handleEvent(payload: Record<string, unknown>): Promise<void>
     _voiceWatchdog(): Promise<void>
     _armVoiceDeadline(ms?: number, ifNone?: boolean): void
+    _awaitVoiceServer(): void
     _getAutoplayTrack(
       sourceName: string,
       identifier: string,
@@ -1106,6 +1114,11 @@ declare module 'aqualink' {
     reason?: string
     /** Defaults to true. */
     destroyRemote?: boolean
+    /**
+     * Join voice fresh instead of carrying the old credentials over (with the
+     * leave-and-rejoin fallback if the join brings none).
+     */
+    freshVoice?: boolean
   }
 
   export interface VoiceStatePayload {
@@ -1843,8 +1856,10 @@ declare module 'aqualink' {
     /**
      * 'leave_rejoin': the rejoin got no new credentials and is leaving the
      * channel to join it again (see `Player.voiceRejoining`).
+     * 'worker_failed': the node lost the player (a NodeLink cluster worker
+     * died); it is rebuilt on the node and joins voice fresh.
      */
-    reason?: 'socket_closed' | 'voice_deadline' | 'leave_rejoin'
+    reason?: 'socket_closed' | 'voice_deadline' | 'leave_rejoin' | 'worker_failed'
   }
 
   export interface RestoreInfo {

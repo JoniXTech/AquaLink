@@ -1605,6 +1605,10 @@ class Player extends EventEmitter {
     this._lifecycleController?.armVoiceDeadline(ms, ifNone, check)
   }
 
+  _awaitVoiceServer() {
+    this._lifecycleController?._awaitVoiceServer()
+  }
+
   async socketClosed(_player, _track, payload) {
     return this._lifecycleController.socketClosed(_player, _track, payload)
   }

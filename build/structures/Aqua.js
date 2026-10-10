@@ -1113,6 +1113,10 @@ class Aqua extends EventEmitter {
     this._invalidateCache()
   }
 
+  _recreateLostPlayer(guildId, node, reason, code) {
+    return this._recovery?.recreateLostPlayer(guildId, node, reason, code)
+  }
+
   _storeBrokenPlayers(node) {
     return this._recovery.storeBrokenPlayers(node)
   }

@@ -266,6 +266,21 @@ class Node {
     this.rest?.setSessionId?.(null)
   }
 
+  // NodeLink lost these guilds' players with a cluster worker and does not
+  // restore them; the client re-creates them. A 5001 close per guild
+  // follows, which recreateLostPlayer takes as the same loss.
+  _handleWorkerFailed(payload) {
+    const guilds = Array.isArray(payload.affectedGuilds)
+      ? payload.affectedGuilds
+      : []
+    this._emitDebug(
+      () => `Worker failed on ${this.name}: ${guilds.length} guild(s) lost`
+    )
+    for (const guildId of guilds) {
+      this.aqua?._recreateLostPlayer?.(guildId, this, 'worker_failed', 5001)
+    }
+  }
+
   _getPlayer(guildId) {
     return guildId ? this.aqua?.players?.get?.(guildId) : null
   }
@@ -333,7 +348,10 @@ class Node {
 
     if (op === OPS_PLAYER_UPDATE)
       this._emitToPlayer(AqualinkEvents.PlayerUpdate, payload)
-    else if (op === OPS_EVENT) this._emitToPlayer('event', payload)
+    else if (op === OPS_EVENT) {
+      if (payload.type === 'WorkerFailedEvent') this._handleWorkerFailed(payload)
+      else this._emitToPlayer('event', payload)
+    }
     else if (op === OPS_STATS) {
       this._lastStatsAt = this._lastAliveAt
       this._updateStats(payload)

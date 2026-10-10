@@ -57,6 +57,14 @@ suppression flags that could get stuck and leave a player silent for good.
   track waiting for voice keeps its own start time, which the playerUpdate
   that brings voice up can no longer reset to 0, and a seek before it
   starts moves that start rather than going to a node with no track.
+- When a NodeLink cluster worker dies, the node loses its players and does
+  not restore them (`WorkerFailedEvent`, then a `5001` / `worker_failed`
+  close per guild). aqualink now rebuilds each affected player on that node
+  at once, with all its state, and joins voice fresh, with the
+  leave-and-rejoin fallback. It used to take the 5001 for a node code the
+  server reconnects by itself, and the players stayed silent until the
+  voice deadline. The host gets `playerReconnect` with reason
+  `worker_failed`, then `playerMigrated` with the same reason.
 
 ## Event changes
 
