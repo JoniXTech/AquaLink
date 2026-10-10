@@ -79,7 +79,10 @@ suppression flags that could get stuck and leave a player silent for good.
   next `trackStart`, or advances on its own after
   `Player.FAILED_TRACK_CLAIM_MS` (10 s). A `play()` of the claimed track
   (the retry) stops that timer, so a slow retry is not raced, and the next
-  failure ends the claim unless the host claims again.
+  failure ends the claim unless the host claims again. A stuck track can be
+  claimed the same way from the `trackStuck` listener: claimed, it isn't
+  stopped (the retry replaces it), and if the claim is released or times
+  out before the track ends, it is stopped then.
 - `playerReconnected` is no longer emitted. A failed voice rejoins the same
   player instead of building a new one.
 
