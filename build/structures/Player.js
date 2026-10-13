@@ -40,6 +40,14 @@ const EVENT_HANDLERS = Object.freeze({
   MixEndedEvent: 'mixEnded'
 })
 
+// Events whose handlers act on the current track: they end it, fail it or
+// advance the queue. Each must be about that track (see _handleEvent).
+const CURRENT_TRACK_EVENTS = new Set([
+  'TrackEndEvent',
+  'TrackExceptionEvent',
+  'TrackStuckEvent'
+])
+
 const WATCHDOG_INTERVAL = 15000
 const VOICE_TRACE_INTERVAL = 15000
 const PLAYER_UPDATE_SILENCE_THRESHOLD = 45000
@@ -394,10 +402,35 @@ class Player extends EventEmitter {
       return
     }
 
+    // A late event for a track the player has moved on from: NodeLink's
+    // stall recovery re-requests a stream, and that request can fail after
+    // the host has retried the track elsewhere. Taken as the current track's,
+    // it would drop the host's claim, stop the retry and advance the queue.
+    // A 'replaced' end always names the previous track, and TrackStart is
+    // left to adopt and gapless promotion, which read payload.track.
+    const eventTrack = payload.track
+    if (
+      CURRENT_TRACK_EVENTS.has(payload.type) &&
+      payload.reason !== 'replaced' &&
+      eventTrack &&
+      this.current &&
+      !Track.same(this.current, eventTrack)
+    ) {
+      if (this.aqua?.debugTrace) {
+        this.aqua._trace('player.event.stale', {
+          guildId: this.guildId,
+          type: payload.type,
+          reason: payload.reason || null,
+          track: eventTrack.info?.identifier || null,
+          current: this.current.identifier || null
+        })
+      }
+      return
+    }
+
     // Adopt any pluginInfo the node attached at playback time.
     // e.g. actual stream source, spotify canvas, and anything added later.
     // `this.current` is the resolve-time track and predates all of it.
-    const eventTrack = payload.track
     if (
       eventTrack?.pluginInfo &&
       this.current &&
