@@ -698,7 +698,7 @@ class Player extends EventEmitter {
         !this._reconnecting &&
         !this._resuming
       )
-        return this.play()
+        return this.play(undefined, { paused: options.paused })
     }
     return this
   }
@@ -1423,7 +1423,7 @@ class Player extends EventEmitter {
   }
 
   // What follows a failed or cleaned-up track: the next one, or the end of
-  // the queue.
+  // the queue. A paused player stays paused on the next track.
   async _advanceAfterFailure(track, isCleanup = false) {
     if (!this.queue.size || isCleanup) {
       // A failed one-shot must not wipe the history it stayed out of.
@@ -1434,7 +1434,7 @@ class Player extends EventEmitter {
         })
       this.aqua.emit(AqualinkEvents.QueueEnd, this, track)
     } else {
-      await this.play()
+      await this.play(undefined, { paused: this.paused })
     }
   }
 

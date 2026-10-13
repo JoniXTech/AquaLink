@@ -978,8 +978,10 @@ class AquaRecovery {
           })
         )
     }
-    if (plan.play === 'current') await player.play(plan.current)
-    else if (plan.play === 'next') await player.play()
+    // The saved pause carries over, as it does for a fresh restore.
+    const paused = !!p.pa
+    if (plan.play === 'current') await player.play(plan.current, { paused })
+    else if (plan.play === 'next') await player.play(undefined, { paused })
 
     if (this.aqua.debugTrace) {
       this.aqua._trace('player.restore.adopt', {
