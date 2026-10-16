@@ -55,6 +55,9 @@ const PREVIOUS_TRACKS_SIZE = 50
 const PREVIOUS_IDS_MAX = 20
 // Upper bound on an adopted player's voice handover; see _beginAdoptGuard.
 const ADOPT_GUARD_MS = 30000
+// At most one voice re-send per player for NodeLink's reconnecting events;
+// see PlayerReconnectingEvent.
+const RECONNECTING_RESEND_MS = 5000
 const AUTOPLAY_MAX = 3
 const BATCHER_POOL_SIZE = 2
 const INVALID_LOADS = new Set(['error', 'empty', 'LOAD_FAILED', 'NO_MATCHES'])
@@ -309,6 +312,7 @@ class Player extends EventEmitter {
     })
 
     this._voiceRequestAt = 0
+    this._reconnectingResendAt = 0
     this._voiceRequestChannel = null
     this._lastVoiceUpTraceAt = 0
     this._lastPlayerUpdateAt = Date.now()
@@ -1637,7 +1641,21 @@ class Player extends EventEmitter {
       AqualinkEvents.PlayerReconnectingEvent,
       payload
     )
-    this.connection?.resendVoiceUpdate?.(true)
+    // NodeLink sends this twice per reconnect of its voice socket, and again
+    // on every round of a reconnect loop. It is reconnecting with the
+    // credentials it already has, so one unforced re-send per few seconds is
+    // enough; only a connection with no credentials to send forces, which
+    // asks Discord for them.
+    const now = Date.now()
+    const conn = this.connection
+    if (conn && now - this._reconnectingResendAt >= RECONNECTING_RESEND_MS) {
+      this._reconnectingResendAt = now
+      if (!conn.resendVoiceUpdate()) conn.resendVoiceUpdate(true)
+    } else if (conn && this.aqua?.debugTrace) {
+      this.aqua._trace('player.reconnecting.coalesced', {
+        guildId: this.guildId
+      })
+    }
     this.aqua.emit(AqualinkEvents.PlayerReconnect, this, { resuming: true })
   }
 
