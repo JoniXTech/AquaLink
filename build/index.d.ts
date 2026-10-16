@@ -488,7 +488,8 @@ declare module 'aqualink' {
      * Takes over a failed or stuck track, for a host that will retry it. Call
      * it synchronously from the `trackError` or `trackStuck` listener for that
      * track; a claimed stuck track is not stopped. The
-     * track's end still emits `trackEnd`, but aqualink neither plays the next
+     * track's first end still emits `trackEnd` (any later end is dropped),
+     * but aqualink neither plays the next
      * track nor emits `queueEnd` for it.
      *
      * Returns `release()`, to call when the host gives up retrying: it runs
