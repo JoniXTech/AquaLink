@@ -1397,14 +1397,27 @@ class Player extends EventEmitter {
 
     // The end of a failed track a host claimed: the host is retrying it, so
     // nothing advances until it releases the claim. `current` is left alone,
-    // since the retry may already have set it.
+    // since the retry may already have set it. Every later end for that
+    // track before the next TrackStart is the failed attempt's too (NodeLink
+    // ends a failed stream with loadFailed, then again from its own stop())
+    // and is dropped. If the retry is already out, the claim's timer runs
+    // again, in case this end was the retry's and no start follows.
     const claim = this._failedTrackClaim
     if (
       claim &&
-      !claim.held &&
       !isReplaced &&
       Track.same(claim.track, payload?.track || claim.track)
     ) {
+      if (claim.held) {
+        if (!claim.timer) this._armFailedTrackClaimTimer(claim)
+        if (this.aqua?.debugTrace) {
+          this.aqua._trace('player.failedTrack.extraEnd', {
+            guildId: this.guildId,
+            reason
+          })
+        }
+        return
+      }
       claim.held = true
       if (!claim.track.oneShot) this.previousTracks.push(claim.track)
       if (this.aqua?.debugTrace) {
