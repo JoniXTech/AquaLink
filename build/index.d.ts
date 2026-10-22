@@ -33,6 +33,7 @@ declare module 'aqualink' {
     persistTracks: 'uri' | 'full'
     maxQueueSave: number
     maxTracksRestore: number
+    fetchNowPlayingOnRestore: boolean
     trackResolveConcurrency: number
     brokenPlayerStorePath: string
 
@@ -893,6 +894,7 @@ declare module 'aqualink' {
     persistTracks?: 'uri' | 'full'
     maxQueueSave?: number
     maxTracksRestore?: number
+    fetchNowPlayingOnRestore?: boolean // fetch the message, not just its id
     trackResolveConcurrency?: number
     brokenPlayerStorePath?: string
   }

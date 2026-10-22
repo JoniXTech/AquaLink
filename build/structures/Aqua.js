@@ -60,6 +60,7 @@ const DEFAULT_OPTIONS = Object.freeze({
   maxQueueSave: 10,
   persistTracks: 'uri',
   maxTracksRestore: 20,
+  fetchNowPlayingOnRestore: false,
   trackResolveConcurrency: 4,
   brokenPlayerStorePath: null
 })
@@ -140,6 +141,7 @@ class Aqua extends EventEmitter {
     this.maxQueueSave = merged.maxQueueSave
     this.persistTracks = merged.persistTracks
     this.maxTracksRestore = merged.maxTracksRestore
+    this.fetchNowPlayingOnRestore = !!merged.fetchNowPlayingOnRestore
     this.trackResolveConcurrency = Math.max(
       1,
       Number(merged.trackResolveConcurrency) || 4

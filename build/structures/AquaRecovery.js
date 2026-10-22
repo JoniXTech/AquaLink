@@ -588,6 +588,22 @@ class AquaRecovery {
     }
   }
 
+  // Restore carries the now-playing message by id: fetching it is one
+  // Discord request per player, all inside the restore burst. delete()
+  // keeps shouldDeleteMessage working on it.
+  _nowPlayingRef(p) {
+    const client = this.aqua.client
+    return {
+      id: p.nw,
+      channelId: p.t,
+      delete: async () => {
+        const messages = client.channels?.cache?.get?.(p.t)?.messages
+        if (messages?.delete) return messages.delete(p.nw)
+        return client.messages?.delete?.(p.nw, p.t)
+      }
+    }
+  }
+
   async restorePlayer(p, preferredNode = null) {
     const gId = String(p.g)
     return this.withGuildLifecycleLock(gId, 'restore', async () => {
@@ -663,7 +679,10 @@ class AquaRecovery {
         }
         if (p.nw && p.t) {
           const channel = this.aqua.client.channels?.cache?.get?.(p.t)
-          if (channel?.messages?.fetch) {
+          const fetched = this.aqua.fetchNowPlayingOnRestore
+          if (!fetched) {
+            player.nowPlayingMessage = this._nowPlayingRef(p)
+          } else if (channel?.messages?.fetch) {
             player.nowPlayingMessage = await channel.messages
               .fetch(p.nw)
               .catch(() => null)
@@ -676,7 +695,8 @@ class AquaRecovery {
             this.aqua._trace('player.nowPlaying.restore', {
               guildId: gId,
               messageId: p.nw,
-              restored: !!player.nowPlayingMessage
+              restored: !!player.nowPlayingMessage,
+              fetched
             })
           }
         }
