@@ -39,7 +39,13 @@ const AqualinkEvents = {
   PlayerReconnectingEvent: 'PlayerReconnectingEvent',
   PlayerReconnect: 'playerReconnect',
   MixStarted: 'mixStarted',
-  MixEnded: 'mixEnded'
+  MixEnded: 'mixEnded',
+  EternalBoxInfo: 'eternalboxInfo',
+  EternalBoxJump: 'eternalboxJump',
+  StreamMetadata: 'streamMetadata',
+  SponsorBlockSegmentsLoaded: 'sponsorBlockSegmentsLoaded',
+  SponsorBlockSegmentSkipped: 'sponsorBlockSegmentSkipped',
+  NodeConnectionStatus: 'nodeConnectionStatus'
 }
 
 module.exports = { AqualinkEvents }

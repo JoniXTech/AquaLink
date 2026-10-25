@@ -36,8 +36,15 @@ const EVENT_HANDLERS = Object.freeze({
   LyricsNotFoundEvent: 'lyricsNotFound',
   MixStartedEvent: 'mixStarted',
   PlayerReconnectingEvent: 'PlayerReconnectingEvent',
-  MixEndedEvent: 'mixEnded'
+  MixEndedEvent: 'mixEnded',
+  EternalBoxInfoEvent: 'eternalboxInfo',
+  EternalBoxJumpEvent: 'eternalboxJump',
+  StreamMetadataEvent: 'streamMetadata',
+  SponsorBlockSegmentsLoadedEvent: 'sponsorBlockSegmentsLoaded',
+  SponsorBlockSegmentSkippedEvent: 'sponsorBlockSegmentSkipped'
 })
+// Event types without a handler, each reported once per process.
+const UNKNOWN_EVENTS = new Set()
 
 const WATCHDOG_INTERVAL = 15000
 const VOICE_DOWN_THRESHOLD = 10000
@@ -335,11 +342,11 @@ class Player extends EventEmitter {
 
     const handler = EVENT_HANDLERS[payload.type]
     if (typeof this[handler] !== 'function') {
-      this.aqua.emit(
-        AqualinkEvents.NodeError,
-        this,
-        new Error(`Unknown event: ${payload.type}`)
-      )
+      // Most likely a newer node's event: worth seeing, but not an error.
+      if (!UNKNOWN_EVENTS.has(payload.type)) {
+        UNKNOWN_EVENTS.add(payload.type)
+        this.nodes?._emitDebug?.(`Unknown event: ${payload.type}`)
+      }
       return
     }
     try {
@@ -1242,6 +1249,31 @@ class Player extends EventEmitter {
   }
   mixEnded(_p, t, payload) {
     _functions.emitIfActive(this, AqualinkEvents.MixEnded, t, payload)
+  }
+  eternalboxInfo(_p, t, payload) {
+    _functions.emitIfActive(this, AqualinkEvents.EternalBoxInfo, t, payload)
+  }
+  eternalboxJump(_p, t, payload) {
+    _functions.emitIfActive(this, AqualinkEvents.EternalBoxJump, t, payload)
+  }
+  streamMetadata(_p, t, payload) {
+    _functions.emitIfActive(this, AqualinkEvents.StreamMetadata, t, payload)
+  }
+  sponsorBlockSegmentsLoaded(_p, t, payload) {
+    _functions.emitIfActive(
+      this,
+      AqualinkEvents.SponsorBlockSegmentsLoaded,
+      t,
+      payload
+    )
+  }
+  sponsorBlockSegmentSkipped(_p, t, payload) {
+    _functions.emitIfActive(
+      this,
+      AqualinkEvents.SponsorBlockSegmentSkipped,
+      t,
+      payload
+    )
   }
   PlayerReconnectingEvent(_p, _t, payload) {
     this._resuming = true

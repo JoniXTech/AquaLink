@@ -1441,6 +1441,10 @@ declare module 'aqualink' {
       successful: number,
       failed: number
     ) => void
+    nodeConnectionStatus: (
+      node: Node,
+      payload: Record<string, unknown>
+    ) => void
     playerCreate: (player: Player) => void
     playerDestroy: (player: Player) => void
     playerUpdate: (player: Player, packet: Record<string, unknown>) => void
@@ -1475,6 +1479,31 @@ declare module 'aqualink' {
       payload: Record<string, unknown>
     ) => void
     lyricsNotFound: (
+      player: Player,
+      track: Track,
+      payload: Record<string, unknown>
+    ) => void
+    eternalboxInfo: (
+      player: Player,
+      track: Track,
+      payload: Record<string, unknown>
+    ) => void
+    eternalboxJump: (
+      player: Player,
+      track: Track,
+      payload: Record<string, unknown>
+    ) => void
+    streamMetadata: (
+      player: Player,
+      track: Track,
+      payload: Record<string, unknown>
+    ) => void
+    sponsorBlockSegmentsLoaded: (
+      player: Player,
+      track: Track,
+      payload: Record<string, unknown>
+    ) => void
+    sponsorBlockSegmentSkipped: (
       player: Player,
       track: Track,
       payload: Record<string, unknown>
@@ -1639,5 +1668,11 @@ declare module 'aqualink' {
     readonly PlayerDestroy: 'playerDestroy'
     readonly PlayersRebuilt: 'playersRebuilt'
     readonly PlayerMigrated: 'playerMigrated'
+    readonly EternalBoxInfo: 'eternalboxInfo'
+    readonly EternalBoxJump: 'eternalboxJump'
+    readonly StreamMetadata: 'streamMetadata'
+    readonly SponsorBlockSegmentsLoaded: 'sponsorBlockSegmentsLoaded'
+    readonly SponsorBlockSegmentSkipped: 'sponsorBlockSegmentSkipped'
+    readonly NodeConnectionStatus: 'nodeConnectionStatus'
   }
 }

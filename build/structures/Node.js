@@ -261,7 +261,13 @@ class Node {
 
     if (op === OPS_PLAYER_UPDATE)
       this._emitToPlayer(AqualinkEvents.PlayerUpdate, payload)
-    else if (op === OPS_EVENT) this._emitToPlayer('event', payload)
+    else if (op === OPS_EVENT) {
+      // NodeLink's network status, sent to one player per session but
+      // about the whole node.
+      if (payload.type === 'ConnectionStatusEvent')
+        this.aqua.emit(AqualinkEvents.NodeConnectionStatus, this, payload)
+      else this._emitToPlayer('event', payload)
+    }
     else if (op === OPS_STATS) this._updateStats(payload)
     else if (op === OPS_READY) this._handleReady(payload)
     else this._handleCustomStringOp(op, payload)
