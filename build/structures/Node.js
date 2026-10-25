@@ -384,6 +384,10 @@ class Node {
       this._emitToPlayer(AqualinkEvents.PlayerUpdate, payload)
     else if (op === OPS_EVENT) {
       if (payload.type === 'WorkerFailedEvent') this._handleWorkerFailed(payload)
+      // NodeLink's network status, sent to one player per session but
+      // about the whole node.
+      else if (payload.type === 'ConnectionStatusEvent')
+        this.aqua.emit(AqualinkEvents.NodeConnectionStatus, this, payload)
       else this._emitToPlayer('event', payload)
     }
     else if (op === OPS_STATS) {
