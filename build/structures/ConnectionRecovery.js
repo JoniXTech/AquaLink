@@ -28,10 +28,7 @@ class ConnectionRecovery {
     conn._lastVoiceDataUpdate = Date.now()
     conn._stateFlags &= ~this.STATE.VOICE_DATA_STALE
     if (unchanged) {
-      if (wasVoiceDataStale) {
-        conn._scheduleVoiceUpdate()
-        conn._player?._flushDeferredPlay?.()
-      }
+      if (wasVoiceDataStale) this.sendVoiceThenPlay()
       return
     }
 
@@ -60,8 +57,23 @@ class ConnectionRecovery {
     }
     const migrated = this.checkRegionMigration()
     if (migrated) return
+    this.sendVoiceThenPlay()
+  }
+
+  // A play deferred until voice goes out once the node has accepted the
+  // voice update: a track that reaches it first loses its start position.
+  // Not accepted, the play stays deferred for the voice deadline.
+  sendVoiceThenPlay() {
+    const conn = this.connection
     conn._scheduleVoiceUpdate()
-    conn._player?._flushDeferredPlay?.()
+    const player = conn._player
+    if (!player?._deferredStart) return
+    // Nothing to send (no session id yet): the play goes out as before.
+    if (!(conn._stateFlags & this.STATE.UPDATE_SCHEDULED))
+      return player._flushDeferredPlay?.()
+    conn.flushVoiceUpdate().then((accepted) => {
+      if (accepted) conn._player?._flushDeferredPlay?.()
+    })
   }
 
   checkRegionMigration() {

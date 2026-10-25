@@ -159,6 +159,7 @@ class Connection {
     this._pendingUpdate = null
     this._lastSentVoiceKey = ''
     this._voiceInFlightKey = ''
+    this._voiceInFlight = null
 
     this._nullChannelTimer = null
     this.isWaitingForDisconnect = false
@@ -529,7 +530,8 @@ class Connection {
 
   // Sends a scheduled voice update now instead of after the flush delay, so
   // it is the first request of a restore. Resolves true once the node has
-  // accepted it, false if there was nothing to send or it failed.
+  // accepted it (or already has it), false if there was nothing to send or
+  // it failed.
   flushVoiceUpdate() {
     if (this._destroyed || !(this._stateFlags & STATE.UPDATE_SCHEDULED))
       return Promise.resolve(false)
@@ -573,7 +575,9 @@ class Connection {
       (this._player?.connected || this._voiceInFlightKey === key)
     ) {
       sharedPool.release(pending.payload)
-      return Promise.resolve(false)
+      return this._voiceInFlightKey === key
+        ? this._voiceInFlight
+        : Promise.resolve(true)
     }
     // Cleared if the send fails: the key means "the node has this", and a
     // failed send left it with nothing.
@@ -582,7 +586,7 @@ class Connection {
     const aqua = this._aqua
     const guildId = this._guildId
 
-    return this._sendUpdate(pending.payload)
+    const sent = this._sendUpdate(pending.payload)
       .then(
         () => {
           this._player?._armVoiceDeadline?.(undefined, true)
@@ -607,9 +611,14 @@ class Connection {
         }
       )
       .finally(() => {
-        if (this._voiceInFlightKey === key) this._voiceInFlightKey = ''
+        if (this._voiceInFlightKey === key) {
+          this._voiceInFlightKey = ''
+          this._voiceInFlight = null
+        }
         sharedPool.release(pending.payload)
       })
+    this._voiceInFlight = sent
+    return sent
   }
 
   async _recoverMissingPlayer(isSessionError) {
