@@ -1257,6 +1257,10 @@ class Aqua extends EventEmitter {
 
   createPlayer(node, options) {
     const guildId = String(options.guildId)
+    // Before the current player is replaced: a create that cannot join
+    // must leave the guild as it was, not with a player that has no voice.
+    if (!(options.voiceChannel?.id || options.voiceChannel))
+      throw new TypeError('Voice channel required')
     const existing = this.players.get(guildId)
     if (existing) {
       _functions.safeCall(() =>

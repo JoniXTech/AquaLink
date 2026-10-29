@@ -127,6 +127,8 @@ class AquaRecovery {
       }
     })
 
+    // The caller gets run's error; the tail only orders the next waiter.
+    tail.catch(this._functions.noop)
     this.aqua._guildLifecycleLocks.set(id, tail)
     return run
   }
@@ -280,16 +282,22 @@ class AquaRecovery {
       // nothing on it, or nowhere to go, has nodeDisconnect for that.
       this.aqua.emit(AqualinkEvents.NodeFailover, failedNode)
       const results = await this.migratePlayersOptimized(players, available)
-      const successful = results.filter((r) => r.success).length
-      if (successful) {
-        this.aqua.emit(
-          AqualinkEvents.NodeFailoverComplete,
-          failedNode,
-          successful,
-          results.length - successful
-        )
-        this.performCleanup()
+      const failures = []
+      for (const r of results) {
+        if (r.success) continue
+        failures.push({
+          guildId: r.guildId,
+          reason: r.error?.message || String(r.error)
+        })
       }
+      this.aqua.emit(
+        AqualinkEvents.NodeFailoverComplete,
+        failedNode,
+        results.length - failures.length,
+        failures.length,
+        failures
+      )
+      this.performCleanup()
     } catch (error) {
       emitOperationalError(this.aqua, null, error)
     } finally {
@@ -321,8 +329,12 @@ class AquaRecovery {
       const batchResults = await Promise.allSettled(
         batch.map((player) => this.migratePlayer(player, pickNode))
       )
-      for (const result of batchResults) {
+      for (let j = 0; j < batchResults.length; j++) {
+        const result = batchResults[j]
+        // Ended by the host while it waited: nothing was there to move.
+        if (result.status === 'fulfilled' && !result.value) continue
         results.push({
+          guildId: String(batch[j].guildId),
           success: result.status === 'fulfilled',
           error: result.reason
         })
@@ -331,12 +343,19 @@ class AquaRecovery {
     return results
   }
 
-  async migratePlayer(player, pickNode) {
-    const guildId = String(player?.guildId)
+  // `listed` is from the failed node's player list, taken before the lock.
+  // A voice deadline's move or a lost-worker rebuild may have replaced it
+  // since; migrating that destroyed object would replace the live player
+  // with one that has no voice channel.
+  async migratePlayer(listed, pickNode) {
+    const guildId = String(listed?.guildId)
     return this.withGuildLifecycleLock(
       guildId,
       'failover-migrate',
       async () => {
+        const player = this.aqua.players.get(guildId)
+        if (!player || player.destroyed) return null
+        if (player !== listed && player.nodes?.isUsable) return player
         const state = this.capturePlayerState(player)
         if (!state) throw new Error('Failed to capture state')
         const oldMessage = player.nowPlayingMessage || null
@@ -381,7 +400,12 @@ class AquaRecovery {
               preserveTracks: true,
               preserveReconnecting: true
             })
-            if (retry === maxRetries - 1) throw error
+            if (retry === maxRetries - 1) {
+              // The player is gone for good (its playerDestroy came as the
+              // migration began); the bot must not stay in the channel.
+              player._queueLeave?.()
+              throw error
+            }
             await this._functions.delay(retryDelay * 1.5 ** retry)
           }
         }
