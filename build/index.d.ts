@@ -214,7 +214,10 @@ declare module 'aqualink' {
       players: Player[],
       availableNodes: Node[]
     ): Promise<MigrationResult[]>
-    _migratePlayer(player: Player, pickNode: () => Node): Promise<Player>
+    _migratePlayer(
+      player: Player,
+      pickNode: () => Node
+    ): Promise<Player | null>
     _capturePlayerState(player: Player): PlayerState | null
     _createPlayerOnNode(
       targetNode: Node,
@@ -1833,8 +1836,14 @@ declare module 'aqualink' {
   }
 
   export interface MigrationResult {
+    guildId: string
     success: boolean
     error?: Error | unknown
+  }
+
+  export interface FailoverFailure {
+    guildId: string
+    reason: string
   }
 
   export type RestoreOutcome =
@@ -2186,7 +2195,8 @@ declare module 'aqualink' {
     nodeFailoverComplete: (
       node: Node,
       successful: number,
-      failed: number
+      failed: number,
+      failures: FailoverFailure[]
     ) => void
     nodeConnectionStatus: (
       node: Node,
