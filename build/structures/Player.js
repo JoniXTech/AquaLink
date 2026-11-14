@@ -277,6 +277,9 @@ class Player extends EventEmitter {
     this._failedTrack = null
     this._failedTrackStuck = false
     this._failedTrackClaim = null
+    // A stuck track aqualink stopped: its 'stopped' end is a failure, not a
+    // skip, so queue loop drops it.
+    this._stuckStop = null
     this.state = PLAYER_STATE.IDLE
     this.txId = 0
     this.isAutoplayEnabled = this.isAutoplay = false
@@ -1138,27 +1141,29 @@ class Player extends EventEmitter {
   skip(target) {
     if (this.destroyed || !this.playing) return this
 
-    if (target === undefined || target === null) return this.stop()
-
+    let idx = 0
     if (typeof target === 'number') {
-      const idx = target | 0
-      if (idx <= 0) return this.stop()
-      if (!this.queue?.size || idx >= this.queue.size) return this.stop()
-      for (let i = 0; i < idx; i++) this.queue.dequeue()
-      return this.stop()
+      idx = target | 0
+      if (idx >= (this.queue?.size || 0)) idx = 0
+    } else if (target != null && this.queue?.size) {
+      const targetId = _functions.toId(target)
+      if (targetId) {
+        idx = this.queue
+          .toArray()
+          .findIndex(
+            (t) =>
+              _functions.toId(t) === targetId ||
+              _functions.toId(t?.info?.identifier) === targetId
+          )
+      }
     }
 
-    const targetId = _functions.toId(target)
-    if (targetId && this.queue?.size) {
-      const arr = this.queue.toArray()
-      const idx = arr.findIndex(
-        (t) =>
-          _functions.toId(t) === targetId ||
-          _functions.toId(t?.info?.identifier) === targetId
-      )
-      if (idx > 0) {
-        for (let i = 0; i < idx; i++) this.queue.dequeue()
-      }
+    // In queue loop the tracks jumped over go round again, ahead of the
+    // current one, which trackEnd puts back once the stop ends it.
+    for (let i = 0; i < idx; i++) {
+      const jumped = this.queue.dequeue()
+      if (this.loop === LOOP_MODES.QUEUE && !jumped?.oneShot)
+        this.queue.add(jumped)
     }
     return this.stop()
   }
@@ -1438,6 +1443,8 @@ class Player extends EventEmitter {
     }
 
     const oneShot = !!track?.oneShot
+    const stuck = !!track && track === this._stuckStop
+    this._stuckStop = null
 
     if (track && !oneShot) this.previousTracks.push(track)
     if (isReplaced) return
@@ -1453,15 +1460,16 @@ class Player extends EventEmitter {
       return
     }
 
-    if (track && reason === 'finished' && !oneShot) {
-      if (this.loop === LOOP_MODES.TRACK) {
+    if (track && !oneShot) {
+      if (reason === 'finished' && this.loop === LOOP_MODES.TRACK) {
         this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
         await this.play(track)
         return
       }
-      if (this.loop === LOOP_MODES.QUEUE) {
-        this.queue.add(track)
-      }
+      // A skipped track goes round again in queue loop like a finished one;
+      // in track loop a skip still moves on.
+      const requeue = reason === 'finished' || (reason === 'stopped' && !stuck)
+      if (requeue && this.loop === LOOP_MODES.QUEUE) this.queue.add(track)
     }
 
     this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
@@ -1571,7 +1579,8 @@ class Player extends EventEmitter {
     if (!claim.held) {
       // A claimed stuck track was not stopped and may still be running:
       // stopping it now ends it, and that end advances.
-      if (claim.stuck && Track.same(this.current, claim.track)) this.stop()
+      if (claim.stuck && Track.same(this.current, claim.track))
+        this._stopStuck()
       return
     }
     if (this.shouldDeleteMessage && !this._reconnecting && !this._resuming)
@@ -1610,7 +1619,12 @@ class Player extends EventEmitter {
   trackStuck(_player, track, payload) {
     if (this.destroyed) return
     if (!this._emitFailure(AqualinkEvents.TrackStuck, track, payload))
-      this.stop()
+      this._stopStuck()
+  }
+
+  _stopStuck() {
+    this._stuckStop = this.current
+    return this.stop()
   }
 
   trackChange(_p, t, payload) {

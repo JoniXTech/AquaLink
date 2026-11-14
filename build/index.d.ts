@@ -559,7 +559,7 @@ declare module 'aqualink' {
     /**
      * Skips the current track
      */
-    skip(): Player
+    skip(target?: number | Track | string): Player
 
     // Advanced Methods
     getLyrics(options?: LyricsOptions): Promise<LyricsResponse | null>
