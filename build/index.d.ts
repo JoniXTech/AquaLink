@@ -373,6 +373,8 @@ declare module 'aqualink' {
     voiceRejoining: boolean
     current: Track | null
     position: number
+    /** Local `Date.now()` when `position` was last set. */
+    readonly positionAt: number
     timestamp: number
     ping: number
     /**
@@ -860,6 +862,8 @@ declare module 'aqualink' {
     constructor()
 
     // Properties
+    /** Goes up by one per change and never goes back for a guild. */
+    readonly rev: number
     readonly size: number
     readonly first: Track | null
     readonly last: Track | null
@@ -1884,6 +1888,18 @@ declare module 'aqualink' {
     retriesLeft: 0
   }
 
+  export type PlayerChangeData =
+    | { kind: 'pause'; value: boolean }
+    | { kind: 'volume'; value: number }
+    | { kind: 'loop'; value: LoopModeName }
+    | { kind: 'seek'; value: number }
+    | { kind: 'filters'; value?: undefined }
+
+  export interface QueueChangeData {
+    rev: number
+    size: number
+  }
+
   export interface PlayerReconnectData {
     /** True for the node's own reconnect (PlayerReconnectingEvent). */
     resuming: boolean
@@ -2204,6 +2220,10 @@ declare module 'aqualink' {
     ) => void
     playerCreate: (player: Player) => void
     playerDestroy: (player: Player) => void
+    /** Not emitted for the state a restore, failover or move writes back. */
+    playerChange: (player: Player, change: PlayerChangeData) => void
+    /** Not emitted for the state a restore, failover or move writes back. */
+    queueChange: (player: Player, change: QueueChangeData) => void
     playerUpdate: (player: Player, packet: Record<string, unknown>) => void
     playerMigrated: (
       oldPlayer: Player,
@@ -2410,6 +2430,8 @@ declare module 'aqualink' {
     readonly LyricsNotFound: 'lyricsNotFound'
     readonly QueueEnd: 'queueEnd'
     readonly PlayerUpdate: 'playerUpdate'
+    readonly PlayerChange: 'playerChange'
+    readonly QueueChange: 'queueChange'
     readonly PlayerMove: 'playerMove'
     readonly PlayerReconnected: 'playerReconnected'
     readonly PlayerReconnect: 'playerReconnect'

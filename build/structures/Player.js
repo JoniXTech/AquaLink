@@ -300,6 +300,8 @@ class Player extends EventEmitter {
     // Set by a restore: whether it adopted the node's player, and how.
     this.restored = null
     this._adoptGuard = null
+    // Above 0 while a restore writes its saved state: no change events.
+    this._quiet = 0
 
     this.volume = _functions.clamp(options.defaultVolume || 100)
     this.loop = this._parseLoop(options.loop)
@@ -310,7 +312,14 @@ class Player extends EventEmitter {
 
     this.connection = new Connection(this)
     this.filters = new Filters(this)
-    this.queue = new Queue()
+    this.queue = new Queue(
+      (queue) =>
+        this._emitStateChange(AqualinkEvents.QueueChange, {
+          rev: queue.rev,
+          size: queue.size
+        }),
+      options.queueRev
+    )
     this.previousIdentifiers = new Set()
     this.previousTracks = new CircularBuffer(PREVIOUS_TRACKS_SIZE)
     this._updateBatcher = batcherPool.acquire(this)
@@ -328,6 +337,39 @@ class Player extends EventEmitter {
     this._lastPlayerUpdateAt = Date.now()
     this._bindEvents()
     this._startWatchdog()
+  }
+
+  // `positionAt` is the local time `position` was last set, so a reader can
+  // tell how old it is.
+  get position() {
+    return this._position
+  }
+
+  set position(value) {
+    this._position = value
+    this.positionAt = Date.now()
+  }
+
+  // After the state is set. A throwing listener is reported, never thrown
+  // into the caller.
+  _emitStateChange(event, change) {
+    if (this.destroyed || this._quiet) return
+    try {
+      this.aqua.emit(event, this, change)
+    } catch (error) {
+      _functions.emitAquaError(this.aqua, error)
+    }
+  }
+
+  // Only `fn`'s synchronous part is quiet: a restore's own writes, not
+  // whatever the host does to the player while the restore awaits.
+  _quietly(fn) {
+    this._quiet++
+    try {
+      return fn()
+    } finally {
+      this._quiet--
+    }
   }
 
   _parseLoop(loop) {
@@ -962,14 +1004,18 @@ class Player extends EventEmitter {
     // would resume nothing.
     if (!this.paused && this._deferredStart) {
       this._flushDeferredPlay()
-      return this
+    } else {
+      this.batchUpdatePlayer({ paused: this.paused }, true).catch((error) =>
+        reportSuppressedError(this, 'player.pause', error, {
+          guildId: this.guildId,
+          paused: this.paused
+        })
+      )
     }
-    this.batchUpdatePlayer({ paused: this.paused }, true).catch((error) =>
-      reportSuppressedError(this, 'player.pause', error, {
-        guildId: this.guildId,
-        paused: this.paused
-      })
-    )
+    this._emitStateChange(AqualinkEvents.PlayerChange, {
+      kind: 'pause',
+      value: this.paused
+    })
     return this
   }
 
@@ -988,14 +1034,18 @@ class Player extends EventEmitter {
     // The node has no track yet: the deferred start goes out from here.
     if (this._deferredStart) {
       this._deferredStartTime = clamped
-      return this
+    } else {
+      this.batchUpdatePlayer({ position: clamped }, true).catch((error) =>
+        reportSuppressedError(this, 'player.seek', error, {
+          guildId: this.guildId,
+          position: clamped
+        })
+      )
     }
-    this.batchUpdatePlayer({ position: clamped }, true).catch((error) =>
-      reportSuppressedError(this, 'player.seek', error, {
-        guildId: this.guildId,
-        position: clamped
-      })
-    )
+    this._emitStateChange(AqualinkEvents.PlayerChange, {
+      kind: 'seek',
+      value: clamped
+    })
     return this
   }
 
@@ -1076,6 +1126,10 @@ class Player extends EventEmitter {
         volume: vol
       })
     )
+    this._emitStateChange(AqualinkEvents.PlayerChange, {
+      kind: 'volume',
+      value: vol
+    })
     return this
   }
 
@@ -1083,7 +1137,12 @@ class Player extends EventEmitter {
     if (this.destroyed) return this
     const idx = typeof mode === 'string' ? LOOP_MODE_NAMES.indexOf(mode) : mode
     if (idx < 0 || idx > 2) throw new Error('Invalid loop mode')
+    if (this.loop === idx) return this
     this.loop = idx
+    this._emitStateChange(AqualinkEvents.PlayerChange, {
+      kind: 'loop',
+      value: LOOP_MODE_NAMES[idx]
+    })
     return this
   }
 
@@ -1160,11 +1219,13 @@ class Player extends EventEmitter {
 
     // In queue loop the tracks jumped over go round again, ahead of the
     // current one, which trackEnd puts back once the stop ends it.
-    for (let i = 0; i < idx; i++) {
-      const jumped = this.queue.dequeue()
-      if (this.loop === LOOP_MODES.QUEUE && !jumped?.oneShot)
-        this.queue.add(jumped)
-    }
+    this.queue._batch(() => {
+      for (let i = 0; i < idx; i++) {
+        const jumped = this.queue.dequeue()
+        if (this.loop === LOOP_MODES.QUEUE && !jumped?.oneShot)
+          this.queue.add(jumped)
+      }
+    })
     return this.stop()
   }
 
@@ -1258,8 +1319,11 @@ class Player extends EventEmitter {
         if (track?.info?.title) {
           this.autoplayRetries = 0
           track.requester = prev.requester || { id: 'Unknown' }
-          this.queue.add(track)
-          await this.play()
+          // One queue change, as for trackEnd's advance.
+          await this.queue._batch(() => {
+            this.queue.add(track)
+            return this.play()
+          })
           return this
         }
       } catch (err) {
@@ -1460,6 +1524,7 @@ class Player extends EventEmitter {
       return
     }
 
+    let requeue = false
     if (track && !oneShot) {
       if (reason === 'finished' && this.loop === LOOP_MODES.TRACK) {
         this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
@@ -1468,13 +1533,21 @@ class Player extends EventEmitter {
       }
       // A skipped track goes round again in queue loop like a finished one;
       // in track loop a skip still moves on.
-      const requeue = reason === 'finished' || (reason === 'stopped' && !stuck)
-      if (requeue && this.loop === LOOP_MODES.QUEUE) this.queue.add(track)
+      requeue =
+        (reason === 'finished' || (reason === 'stopped' && !stuck)) &&
+        this.loop === LOOP_MODES.QUEUE
     }
 
-    this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
-    if (this.queue.size) {
-      await this.play()
+    // The re-add and the next track's dequeue are one queue change; play()
+    // dequeues before its first await.
+    let next = null
+    this.queue._batch(() => {
+      if (requeue) this.queue.add(track)
+      this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
+      if (this.queue.size) next = this.play()
+    })
+    if (next) {
+      await next
     } else if (this.isAutoplayEnabled && !oneShot) {
       await this.autoplay()
     } else {

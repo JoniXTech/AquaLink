@@ -10,6 +10,8 @@ const AqualinkEvents = {
   LyricsNotFound: 'lyricsNotFound',
   QueueEnd: 'queueEnd',
   PlayerUpdate: 'playerUpdate',
+  PlayerChange: 'playerChange',
+  QueueChange: 'queueChange',
   PlayerMove: 'playerMove',
   PlayerReconnected: 'playerReconnected',
   AutoplayFailed: 'autoplayFailed',
