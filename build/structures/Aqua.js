@@ -229,6 +229,9 @@ class Aqua extends EventEmitter {
     this._selectionEpoch = 0
     this._nodeLoadCache = new Map()
     this._playerJoinedAt = new WeakMap()
+    // A destroyed player's queue rev, only while it is ahead of the clock
+    // (a burst of changes), so the guild's next queue starts above it.
+    this._queueRevs = new Map()
     this._eventHandlers = null
     this._loading = false
     this._voiceStateQueue = []
@@ -1271,7 +1274,9 @@ class Aqua extends EventEmitter {
         })
       )
     }
-    const player = new Player(this, node, options)
+    const queueRev = this._queueRevs.get(guildId) || 0
+    this._queueRevs.delete(guildId)
+    const player = new Player(this, node, { ...options, queueRev })
     this.players.set(guildId, player)
     if (this.debugTrace) {
       this._trace('player.create', {
@@ -1295,6 +1300,11 @@ class Aqua extends EventEmitter {
     player.nodes?.players?.delete?.(player)
     this._invalidateCache()
     const guildId = String(player.guildId)
+    const rev = Math.max(
+      player.queue?.rev || 0,
+      this._queueRevs.get(guildId) || 0
+    )
+    if (rev > Date.now()) this._queueRevs.set(guildId, rev)
     if (this.players.get(guildId) === player) this.players.delete(guildId)
     if (this.debugTrace) {
       this._trace('player.destroyed', {

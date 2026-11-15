@@ -27,6 +27,7 @@ const FILTER_DEFAULTS = Object.freeze({
   }),
   lowPass: Object.freeze({ smoothing: 20 })
 })
+const { AqualinkEvents } = require('./AqualinkEvents')
 const { reportSuppressedError } = require('./Reporting')
 
 const FILTER_KEYS = Object.freeze(
@@ -537,6 +538,10 @@ class Filters {
     }
 
     for (const key of dirtyKeys) this._dirty.delete(key)
+    // Once per update, however many setters made it.
+    this.player._emitStateChange(AqualinkEvents.PlayerChange, {
+      kind: 'filters'
+    })
 
     try {
       await this.player.nodes.rest.updatePlayer({

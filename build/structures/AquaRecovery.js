@@ -234,15 +234,17 @@ class AquaRecovery {
           resuming: true
         })
         if (current && player?.queue?.add) {
-          player.queue.add(current)
           // Paused with the track, not by a later op: a pause sent before
           // voice is up leaves the deferred track waiting for a playerUpdate
           // a paused player never sends.
           // Paused and at its position in the same update as the track.
-          await player.play(undefined, {
-            oneShot: current.oneShot,
-            paused: !!state.paused,
-            startTime: state.position || 0
+          await player._quietly(() => {
+            player.queue.add(current)
+            return player.play(undefined, {
+              oneShot: current.oneShot,
+              paused: !!state.paused,
+              startTime: state.position || 0
+            })
           })
         }
         return player
@@ -627,6 +629,8 @@ class AquaRecovery {
     })
   }
 
+  // The saved state is written quietly: a restore is not a change a host
+  // has to hear about, player by player.
   async restorePlayerState(newPlayer, state) {
     // Run in order, not together: play() resolves its track before it sends,
     // so a pause started alongside it reached the node first and play then
@@ -662,7 +666,7 @@ class AquaRecovery {
     if (state.loudnessNormalizer && newPlayer.setLoudnessNormalizer)
       newPlayer.setLoudnessNormalizer(true)
     if (state.queue?.length && newPlayer.queue?.add)
-      newPlayer.queue.add(...state.queue)
+      newPlayer._quietly(() => newPlayer.queue.add(...state.queue))
     if (state.current && this.aqua.failoverOptions.preservePosition) {
       if (this.aqua.failoverOptions.resumePlayback) {
         // Paused and positioned with the track: see rebuildPlayer.
@@ -674,14 +678,14 @@ class AquaRecovery {
           })
         )
       } else if (newPlayer.queue?.add) {
-        newPlayer.queue.add(state.current)
+        newPlayer._quietly(() => newPlayer.queue.add(state.current))
       }
     }
     newPlayer.loop = state.loop
     newPlayer.shuffle = state.shuffle
     for (const op of ops) {
       try {
-        await op()
+        await newPlayer._quietly(op)
       } catch (error) {
         reportSuppressedError(this.aqua, 'player.restoreState', error, {
           guildId: newPlayer.guildId
@@ -823,22 +827,25 @@ class AquaRecovery {
         player._resuming = !!p.resuming
         this._applyVoiceBootstrap(player, p.vs)
         const { all: validTracks } = await this._restoreTracks(p, targetNode)
+        // The saved state is written quietly; see restorePlayerState.
         if (validTracks.length && player.queue?.add) {
-          player.queue.add(...validTracks)
+          player._quietly(() => player.queue.add(...validTracks))
         }
         this._applySavedModes(player, p)
         if (p.u && validTracks[0]) {
           if (p.vol != null) {
             if (typeof player.setVolume === 'function')
-              await player.setVolume(p.vol)
+              player._quietly(() => player.setVolume(p.vol))
             else player.volume = p.vol
           }
 
-          await player.play(undefined, {
-            startTime: p.p,
-            paused: p.pa,
-            userData: p.ud
-          })
+          await player._quietly(() =>
+            player.play(undefined, {
+              startTime: p.p,
+              paused: p.pa,
+              userData: p.ud
+            })
+          )
         }
         await this._restoreNowPlaying(player, p, gId)
         this._finishRestore(player, {
@@ -988,7 +995,9 @@ class AquaRecovery {
     })
     const volume = remote ? remote.volume : p.vol
     if (Number.isFinite(volume)) player.volume = volume
-    if (plan.queue.length) player.queue.add(...plan.queue)
+    // The saved state is written quietly; see restorePlayerState.
+    if (plan.queue.length)
+      player._quietly(() => player.queue.add(...plan.queue))
     this._applySavedModes(player, p)
     if (plan.ended) player.previousTracks.push(plan.ended)
     if (plan.outcome === 'continued' || plan.outcome === 'promoted') {
@@ -1020,8 +1029,10 @@ class AquaRecovery {
     }
     // The saved pause carries over, as it does for a fresh restore.
     const paused = !!p.pa
-    if (plan.play === 'current') await player.play(plan.current, { paused })
-    else if (plan.play === 'next') await player.play(undefined, { paused })
+    if (plan.play === 'current')
+      await player._quietly(() => player.play(plan.current, { paused }))
+    else if (plan.play === 'next')
+      await player._quietly(() => player.play(undefined, { paused }))
 
     if (this.aqua.debugTrace) {
       this.aqua._trace('player.restore.adopt', {
