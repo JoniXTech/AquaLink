@@ -608,6 +608,8 @@ declare module 'aqualink' {
     ): Promise<boolean | void>
 
     // Internal Methods
+    /** Run `fn` without emitting change events for what it changes; nests. */
+    _quietly<T>(fn: () => T): T
     _parseLoop(loop: unknown): LoopMode
     _bindEvents(): void
     _startWatchdog(): void
