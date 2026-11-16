@@ -1561,12 +1561,14 @@ class Player extends EventEmitter {
   }
 
   // What follows a failed or cleaned-up track: the next one, or the end of
-  // the queue. A paused player stays paused on the next track.
+  // the queue. A paused player stays paused on the next track. At the end
+  // it is not playing, as after a finished track: hosts start their next
+  // pick from QueueEnd only when it isn't.
   async _advanceAfterFailure(track, isCleanup = false) {
     if (!this.queue.size || isCleanup) {
+      this.playing = false
       // A failed one-shot must not wipe the history it stayed out of.
-      if (track?.oneShot && !isCleanup) this.playing = false
-      else
+      if (!track?.oneShot || isCleanup)
         this.clearData({
           preserveTracks: this._reconnecting || this._resuming
         })
