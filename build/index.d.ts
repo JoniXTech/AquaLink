@@ -1328,6 +1328,7 @@ declare module 'aqualink' {
       deficit: number
     }
     ping?: number
+    capacity?: { maxPlayingPlayers: number }
   }
 
   export interface NodeInfo {
