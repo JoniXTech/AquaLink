@@ -1076,6 +1076,12 @@ class Node {
     if (payload.uptime !== undefined) s.uptime = payload.uptime
     if (payload.ping !== undefined) s.ping = payload.ping
 
+    // NodeLink omits capacity when none is configured, so a node that drops it
+    // must not keep its old number.
+    const max = payload.capacity?.maxPlayingPlayers
+    if (Number.isFinite(max) && max > 0) s.capacity = { maxPlayingPlayers: max }
+    else delete s.capacity
+
     if (payload.memory) {
       const m = s.memory,
         pm = payload.memory
