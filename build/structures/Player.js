@@ -247,6 +247,17 @@ class CircularBuffer {
     this.buffer.fill(undefined)
     this.count = this.index = 0
   }
+
+  // Takes out the newest occurrence of `item`; the rest keep their order.
+  remove(item) {
+    const items = this.toArray()
+    const idx = items.lastIndexOf(item)
+    if (idx === -1) return false
+    items.splice(idx, 1)
+    this.clear()
+    for (const t of items) this.push(t)
+    return true
+  }
 }
 
 class Player extends EventEmitter {
@@ -302,6 +313,12 @@ class Player extends EventEmitter {
     this._adoptGuard = null
     // The track setAudioTrack replayed, until its TrackStart.
     this._audioSwitch = null
+    // The tracks play() took off the node, oldest first, until their
+    // 'replaced' end: that end is where they enter previousTracks.
+    this._replacing = []
+    // The track playPrevious put back in the queue: the play that replaces
+    // it leaves it out of _replacing, since it plays again.
+    this._replayed = null
     // Above 0 while a restore writes its saved state: no change events.
     this._quiet = 0
 
@@ -657,6 +674,10 @@ class Player extends EventEmitter {
 
     if (!item) return this
 
+    const replaced = this.current
+    const replays = !!replaced && replaced === this._replayed
+    this._replayed = null
+
     try {
       let resolvedItem = null
       if (item?.track) {
@@ -680,6 +701,11 @@ class Player extends EventEmitter {
         }
         if (this._reconnecting || this._resuming) return this
         throw new Error('Failed to resolve track')
+      }
+      if (replaced && replaced !== this.current && !replays) {
+        this._replacing.push(replaced)
+        // Ends that never came (a deferred start was replaced) don't pile up.
+        if (this._replacing.length > 8) this._replacing.shift()
       }
 
       // The host's retry of a track it claimed: the claim now waits for this
@@ -1247,6 +1273,29 @@ class Player extends EventEmitter {
   replay() {
     return this.seek(0)
   }
+
+  // Goes back to `target` from previousTracks. Its entry leaves the history,
+  // since this play adds it again, and the current track goes to the head
+  // of the queue, so its interrupted play is no entry either. False if
+  // destroyed or `target` is not in the history.
+  async playPrevious(target) {
+    if (this.destroyed || !this.queue || !target) return false
+    const entry = this.previousTracks
+      .toArray()
+      .findLast((t) => t === target || Track.same(t, target))
+    if (!entry) return false
+    this.previousTracks.remove(entry)
+    const back = this.current
+    if (back && !back.oneShot && !Track.same(back, entry)) {
+      this.queue._batch(() => {
+        this.queue.add(back)
+        this.queue.move(this.queue.size - 1, 0)
+      })
+      this._replayed = back
+    }
+    await this.play(entry)
+    return true
+  }
   skip(target) {
     if (this.destroyed || !this.playing) return this
 
@@ -1548,7 +1597,6 @@ class Player extends EventEmitter {
         return
       }
       claim.held = true
-      if (!claim.track.oneShot) this.previousTracks.push(claim.track)
       if (this.aqua?.debugTrace) {
         this.aqua._trace('player.failedTrack.held', {
           guildId: this.guildId,
@@ -1563,13 +1611,14 @@ class Player extends EventEmitter {
     const stuck = !!track && track === this._stuckStop
     this._stuckStop = null
 
-    // The end setAudioTrack causes: the track plays on, on another stream.
-    const switched = isReplaced && !!track && track === this._audioSwitch
-    if (track && !oneShot && !switched) this.previousTracks.push(track)
-    if (isReplaced) return
+    if (isReplaced) {
+      this._endReplaced(payload?.track)
+      return
+    }
+    if (track && !oneShot) this.previousTracks.push(track)
     if (this.shouldDeleteMessage && !this._reconnecting && !this._resuming)
       _functions.safeDel(this.nowPlayingMessage)
-    if (!isReplaced) this.current = null
+    this.current = null
 
     // Every ended track gets TrackEnd, the last one of a queue included, and
     // QueueEnd names the track it came after.
@@ -1613,6 +1662,21 @@ class Player extends EventEmitter {
       }
       this.aqua.emit(AqualinkEvents.QueueEnd, this, track)
     }
+  }
+
+  // A 'replaced' end names the track a play() took off the node, while
+  // `current` is already the new one. The node sends these in play order,
+  // so older entries still waiting were never on the node.
+  _endReplaced(ended) {
+    // The end setAudioTrack causes: the track plays on, on another stream.
+    if (this._audioSwitch && this._audioSwitch === this.current) {
+      if (!ended || Track.same(this.current, ended)) return
+    }
+    const list = this._replacing
+    const idx = ended ? list.findIndex((t) => Track.same(t, ended)) : 0
+    if (idx < 0 || !list.length) return
+    const track = list.splice(0, idx + 1)[idx]
+    if (!track.oneShot) this.previousTracks.push(track)
   }
 
   // What follows a failed or cleaned-up track: the next one, or the end of
@@ -1713,6 +1777,10 @@ class Player extends EventEmitter {
         this._stopStuck()
       return
     }
+    // Only a claim given up with its end held is a play of its own. A retry
+    // that starts pushes the track at its own end, and a retry that fails
+    // either holds a new claim or ends normally.
+    if (!claim.track.oneShot) this.previousTracks.push(claim.track)
     if (this.shouldDeleteMessage && !this._reconnecting && !this._resuming)
       _functions.safeDel(this.nowPlayingMessage)
     this.current = null
@@ -1895,7 +1963,8 @@ class Player extends EventEmitter {
     this._dataStore?.clear()
     this.previousIdentifiers?.clear()
     if (this.current?.dispose && !preserveTracks) this.current.dispose()
-    this.current = this._audioSwitch = null
+    this.current = this._audioSwitch = this._replayed = null
+    this._replacing.length = 0
     this.position = this.timestamp = 0
     this.queue?.clear({ dispose: !preserveTracks })
     return this
