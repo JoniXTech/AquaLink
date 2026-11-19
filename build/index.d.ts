@@ -557,6 +557,8 @@ declare module 'aqualink' {
      * Replays the current track from the beginning
      */
     replay(): Player
+    /** Plays a track from `previousTracks` again; false if it is not there. */
+    playPrevious(target: Track): Promise<boolean>
 
     /**
      * Skips the current track
@@ -1064,6 +1066,8 @@ declare module 'aqualink' {
     push(item: T): void
     getLast(): T | null
     clear(): void
+    /** Takes out the newest occurrence of `item`; the rest keep their order. */
+    remove(item: T): boolean
     /** Oldest entry first */
     toArray(): T[]
   }
