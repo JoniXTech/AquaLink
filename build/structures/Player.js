@@ -300,6 +300,8 @@ class Player extends EventEmitter {
     // Set by a restore: whether it adopted the node's player, and how.
     this.restored = null
     this._adoptGuard = null
+    // The track setAudioTrack replayed, until its TrackStart.
+    this._audioSwitch = null
     // Above 0 while a restore writes its saved state: no change events.
     this._quiet = 0
 
@@ -663,6 +665,8 @@ class Player extends EventEmitter {
         resolvedItem = await item.resolve(this.aqua)
       }
       this.current = resolvedItem
+      // A play of its own: the start that follows is no audio switch.
+      this._audioSwitch = null
       if (this.destroyed) return this
       if (!this.current?.track) {
         this.current = null
@@ -748,22 +752,15 @@ class Player extends EventEmitter {
         return this
       }
 
-      const updateData = {
-        track: { encoded: this.current.track },
-        paused: this.paused
-      }
-      if (this.current.userData)
-        updateData.track.userData = this.current.userData
-      if (this.position > 0) updateData.position = this.position
-
       this._deferredStart = false
       this._deferredStartTime = 0
-      const sent = await this.batchUpdatePlayer(updateData, true).catch(
-        (err) => {
-          if (!this.destroyed) _functions.emitAquaError(this.aqua, err)
-          return false
-        }
-      )
+      const sent = await this.batchUpdatePlayer(
+        this._playUpdate(this.position),
+        true
+      ).catch((err) => {
+        if (!this.destroyed) _functions.emitAquaError(this.aqua, err)
+        return false
+      })
       // The retry never reached the node and its host cannot tell: the
       // claim times out again rather than wait for a start that won't come.
       if (
@@ -790,6 +787,59 @@ class Player extends EventEmitter {
         return this.play(undefined, { paused: options.paused })
     }
     return this
+  }
+
+  // The update that plays the current track. Every send of a track goes
+  // through here, so a retry, loop, failover or deferred start keeps the
+  // track's userData and audio stream.
+  _playUpdate(position) {
+    const track = this.current
+    const update = { track: { encoded: track.track }, paused: this.paused }
+    if (track.userData) update.track.userData = track.userData
+    if (track.audioTrackId) update.track.audioTrackId = track.audioTrackId
+    if (position > 0) update.position = position
+    return update
+  }
+
+  // Plays the current track again on another of its audio streams (an id
+  // from pluginInfo.audioTracks, null for the default), from where it is and
+  // paused as it is. It is the same play: its TrackStart has audioSwitch set
+  // and the replaced end stays out of previousTracks. False if not sent.
+  async setAudioTrack(id) {
+    if (id != null && typeof id !== 'string') {
+      throw new TypeError(
+        `Player.setAudioTrack(): id must be a string or null, got ${typeof id}`
+      )
+    }
+    const track = this.current
+    if (this.destroyed || !this.playing || !track?.track) return false
+    const audioTrackId = id || null
+    const before = track.audioTrackId
+    if (before === audioTrackId) return true
+    track.audioTrackId = audioTrackId
+
+    // Not on the node yet: the deferred start sends it.
+    if (!this._deferredStart) {
+      let position = this.position || 0
+      if (!this.paused) position += Date.now() - this.positionAt
+      const length = track.info?.length
+      if (length) position = Math.min(position, length)
+      this._audioSwitch = track
+      const sent = await this.batchUpdatePlayer(
+        this._playUpdate(Math.floor(position)),
+        true
+      ).catch(() => false) // only a destroyed player rejects
+      if (!sent) {
+        if (this._audioSwitch === track) this._audioSwitch = null
+        if (track.audioTrackId === audioTrackId) track.audioTrackId = before
+        return false
+      }
+    }
+    this._emitStateChange(AqualinkEvents.PlayerChange, {
+      kind: 'audioTrack',
+      value: audioTrackId
+    })
+    return true
   }
 
   connect(options = {}) {
@@ -1455,9 +1505,12 @@ class Player extends EventEmitter {
       resumed = Track.same(guard.streaming, payload.track || startedTrack)
       if (!resumed && !guard.sent) guard.streaming = startedTrack
     }
+    const audioSwitch = this._audioSwitch === startedTrack
+    this._audioSwitch = null
     this.aqua.emit(AqualinkEvents.TrackStart, this, startedTrack, {
       ...payload,
-      resumed
+      resumed,
+      audioSwitch
     })
     this._resuming = false
     if (guard?.sent && resumed) this._endAdoptGuard('started')
@@ -1510,7 +1563,9 @@ class Player extends EventEmitter {
     const stuck = !!track && track === this._stuckStop
     this._stuckStop = null
 
-    if (track && !oneShot) this.previousTracks.push(track)
+    // The end setAudioTrack causes: the track plays on, on another stream.
+    const switched = isReplaced && !!track && track === this._audioSwitch
+    if (track && !oneShot && !switched) this.previousTracks.push(track)
     if (isReplaced) return
     if (this.shouldDeleteMessage && !this._reconnecting && !this._resuming)
       _functions.safeDel(this.nowPlayingMessage)
@@ -1840,7 +1895,7 @@ class Player extends EventEmitter {
     this._dataStore?.clear()
     this.previousIdentifiers?.clear()
     if (this.current?.dispose && !preserveTracks) this.current.dispose()
-    this.current = null
+    this.current = this._audioSwitch = null
     this.position = this.timestamp = 0
     this.queue?.clear({ dispose: !preserveTracks })
     return this

@@ -549,13 +549,7 @@ class PlayerLifecycle {
     const startTime = player._deferredStartTime || 0
     player._deferredStartTime = 0
     player.position = startTime
-    const updateData = {
-      track: { encoded: player.current.track },
-      paused: player.paused
-    }
-    if (player.current.userData)
-      updateData.track.userData = player.current.userData
-    if (startTime > 0) updateData.position = startTime
+    const updateData = player._playUpdate(startTime)
     if (player.aqua?.debugTrace) {
       player.aqua._trace('player.play.deferred.flush', {
         guildId: player.guildId,

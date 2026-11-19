@@ -582,6 +582,8 @@ declare module 'aqualink' {
     setFading(config: FadingConfig | null): Player
     setCrossfade(config: CrossfadeConfig | null): Player
     setLoudnessNormalizer(enabled: boolean): Player
+    /** Replays the current track on that stream, in place; false if unsent. */
+    setAudioTrack(id: string | null): Promise<boolean>
     updatePlayer(data: UpdatePlayerOptions['data']): Promise<unknown>
     cleanup(): Promise<void>
     getActiveMixer(guildId: string): Promise<unknown[]>
@@ -693,6 +695,8 @@ declare module 'aqualink' {
     userData: Record<string, unknown> | null
     /** Played with `play(track, { oneShot: true })` */
     oneShot: boolean
+    /** A `pluginInfo.audioTracks` id, sent with every play; null: default. */
+    audioTrackId: string | null
     /**
      * Whatever you passed as `requester` to `resolve`/`search`; aqualink never
      * inspects it beyond `.id` and `.username`. A track restored from a saved
@@ -1375,6 +1379,7 @@ declare module 'aqualink' {
     pluginInfo?: Record<string, unknown>
     playlist?: PlaylistInfo
     userData?: Record<string, unknown>
+    audioTrackId?: string | null
     node?: Node
     nodes?: Node
   }
@@ -1897,6 +1902,14 @@ declare module 'aqualink' {
     | { kind: 'loop'; value: LoopModeName }
     | { kind: 'seek'; value: number }
     | { kind: 'filters'; value?: undefined }
+    | { kind: 'audioTrack'; value: string | null }
+
+  export interface TrackStartPayload extends Record<string, unknown> {
+    /** The node re-sent the start of a stream that survived a resume. */
+    resumed: boolean
+    /** The same play on another audio stream, from `setAudioTrack`. */
+    audioSwitch: boolean
+  }
 
   export interface QueueChangeData {
     rev: number
@@ -2238,7 +2251,11 @@ declare module 'aqualink' {
     /** No longer emitted: a failed voice now rejoins the same player. */
     playerReconnected: (player: Player, data: Record<string, unknown>) => void
     playerReconnect: (player: Player, data: PlayerReconnectData) => void
-    trackStart: (player: Player, track: Track) => void
+    trackStart: (
+      player: Player,
+      track: Track,
+      payload: TrackStartPayload
+    ) => void
     trackEnd: (player: Player, track: Track, reason?: string) => void
     trackError: (player: Player, track: Track, error: Error | unknown) => void
     trackStuck: (player: Player, track: Track, thresholdMs: number) => void
