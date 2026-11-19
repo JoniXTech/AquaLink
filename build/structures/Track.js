@@ -29,6 +29,9 @@ class Track {
     this.userData = data.userData || null
     // set by player.play(track, { oneShot: true })
     this.oneShot = false
+    // The node's audio stream for this track (pluginInfo.audioTracks), sent
+    // with every play of it; null for the default one.
+    this.audioTrackId = _h.str(data.audioTrackId) || null
 
     this.playlist = data.playlist || null
     this.node = node || data.node || null
@@ -74,6 +77,7 @@ class Track {
       info: { ...this.info },
       pluginInfo: this.pluginInfo,
       userData: this.userData,
+      audioTrackId: this.audioTrackId,
       requester: _h.requesterTag(this.requester)
     }
   }
@@ -170,6 +174,7 @@ class Track {
       this.nodes =
       this.playlist =
       this.userData =
+      this.audioTrackId =
       this.track =
         null
     this.identifier =
