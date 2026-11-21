@@ -24,11 +24,25 @@ function setup({ preload = 'loop' } = {}) {
   aqua.on('error', () => {})
   aqua._trace = () => {}
   const debug = []
-  const nodes = { rest: {}, isNodelink: true, _emitDebug: (m) => debug.push(m) }
+  const node = { playing: null, next: null, position: 0, events: [], sends: [] }
+  // The node's own view of the player, as its REST API gives it.
+  node.gets = 0
+  node.reply = null
+  const rest = {
+    getPlayer: async () => {
+      node.gets++
+      if (node.reply) await node.reply
+      const encoded = node.playing
+      return {
+        track: encoded && { encoded, info: { identifier: idOf(encoded) } },
+        state: { position: node.position, time: Date.now() }
+      }
+    }
+  }
+  const nodes = { rest, isNodelink: true, _emitDebug: (m) => debug.push(m) }
   const p = new Player(aqua, nodes, { guildId: '1' })
   p.connected = true
   p.voiceChannel = null
-  const node = { playing: null, next: null, events: [], sends: [] }
   const ev = (type, encoded, extra = {}) =>
     node.events.push({ type, track: { encoded, info: { identifier: idOf(encoded) } }, ...extra })
   p.updatePlayer = async (data) => {
@@ -42,6 +56,7 @@ function setup({ preload = 'loop' } = {}) {
       } else {
         if (old) ev('TrackEndEvent', old, { reason: 'replaced' })
         node.playing = enc
+        node.position = data.position || 0
         ev('TrackStartEvent', enc)
       }
     }
@@ -75,12 +90,16 @@ function setup({ preload = 'loop' } = {}) {
     await flush()
   }
   /** NodeLink's switch to the preloaded track (or `other`), end then start. */
-  const promote = async (reason, { other = null, start = true, between = null } = {}) => {
+  const promote = async (
+    reason,
+    { other = null, start = true, between = null, at = 0 } = {}
+  ) => {
     const enc = node.playing
     const into = other ? `enc-${other}` : node.next
     assert.ok(into, 'nothing preloaded to promote')
     node.next = null
     node.playing = into
+    node.position = at
     ev('TrackEndEvent', enc, { reason })
     if (start) ev('TrackStartEvent', into)
     await one()
@@ -202,6 +221,20 @@ for (const reason of ['gapless', 'crossfading']) {
       assert.equal(t.aqua.promotionFallbacks, 0)
     })
 
+    it('a play while the promoted start is missing: its own start counts', async () => {
+      const t = setup()
+      await start(t, 'A', 'B')
+      const X = mk('X')
+      await t.promote(reason, {
+        start: false,
+        between: async () => { await t.p.play(X) }
+      })
+      assert.equal(t.p.current.identifier, 'X')
+      assert.deepEqual(t.node.sends, ['A', 'X'])
+      assert.deepEqual(t.starts, ['A', 'X'])
+      assert.equal(t.aqua.promotionFallbacks, 0)
+    })
+
     it('previous right after the promotion: one entry per play', async () => {
       const t = setup()
       await start(t, 'A', 'B')
@@ -245,6 +278,59 @@ for (const reason of ['gapless', 'crossfading']) {
     })
   })
 }
+
+describe('the promoted track\'s position', () => {
+  const tick = () => new Promise((r) => setImmediate(r))
+
+  it('crossfade: read from the node, a blend\'s length in', async () => {
+    const t = setup()
+    await start(t, 'A', 'B')
+    await t.promote('crossfading', { at: 6000 })
+    await tick()
+    assert.equal(t.p.current.identifier, 'B')
+    assert.equal(t.p.position, 6000)
+    assert.equal(t.node.gets, 1)
+  })
+
+  it('gapless: starts at 0, nothing to read', async () => {
+    const t = setup()
+    await start(t, 'A', 'B')
+    await t.promote('gapless')
+    await tick()
+    assert.equal(t.p.position, 0)
+    assert.equal(t.node.gets, 0)
+  })
+
+  it('a position written before the reply is newer and stays', async () => {
+    const t = setup()
+    await start(t, 'A', 'B')
+    let answer
+    t.node.reply = new Promise((r) => { answer = r })
+    await t.promote('crossfading', { at: 6000 })
+    // a playerUpdate or seek lands first
+    await new Promise((r) => setTimeout(r, 5))
+    t.p.position = 6400
+    answer()
+    await tick()
+    assert.equal(t.p.position, 6400)
+  })
+
+  it('a play before the reply: the reply is not the new track\'s', async () => {
+    const t = setup()
+    await start(t, 'A', 'B')
+    let answer
+    t.node.reply = new Promise((r) => { answer = r })
+    await t.promote('crossfading', { at: 6000 })
+    await t.p.play(mk('X'), { startTime: 1000 })
+    await t.flush()
+    t.node.playing = 'enc-B' // the reply describes the node before the play
+    t.node.position = 6000
+    answer()
+    await tick()
+    assert.equal(t.p.current.identifier, 'X')
+    assert.equal(t.p.position, 1000)
+  })
+})
 
 describe('a finished end (Lavalink, or no preload)', () => {
   it('still plays the next track itself', async () => {
