@@ -91,13 +91,17 @@ whose successor is already playing:
   loop) becomes `current` the way `play()` would set it, but nothing is sent
   (`_adoptPromotion`);
 - the `TrackStart` that follows confirms it and is emitted once
-  (`_settlePromotion`);
+  (`_settlePromotion`). After a crossfade the promoted track is already a
+  blend's length in and the start does not say how far, so aqualink reads
+  its position from the node once (`GET` player); a playerUpdate, seek or
+  play in the meantime wins;
 - if that start is another track's, or none comes within 2 s, aqualink plays
   the expected track after all, which is the old behaviour. Each such
   fallback is logged once on `debug` and counted in `aqua.promotionFallbacks`;
 - a `play()` while the start is still on its way (a host `/play`, or
   `playPrevious`) cancels the adoption, and the promoted track's start is
-  dropped. `stop()` and `skip()` act on the promoted track, which is then
+  dropped; that play's own start is emitted, even if the promoted one never
+  came. `stop()` and `skip()` act on the promoted track, which is then
   `current`.
 
 A head that is not resolved yet cannot be what the host preloaded, so it is
@@ -106,9 +110,11 @@ played as before. Lavalink never sends these reasons.
 Tests (real `Player` and `Queue`, a scripted node that promotes its
 `nextTrack`), each for gapless and crossfade: no loop, track loop (looping
 track preloaded, and queue head preloaded), queue loop, last track promoted,
-`stop`, `skip` and `play` between end and start, previous right after,
-another track promoted, no start. All give one `trackStart` per play and one
-history entry per play; 22 of the 23 fail before the change.
+`stop`, `skip` and `play` between end and start, `play` with no promoted
+start, previous right after, another track promoted, no start; and the
+crossfaded track's position (read from the node, a newer write wins, none
+after gapless). All give one `trackStart` per play and one history entry
+per play; 22 of the original 23 fail before the change.
 
 The local repro above, with the fix and without any patching:
 

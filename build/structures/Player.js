@@ -1651,7 +1651,7 @@ class Player extends EventEmitter {
     if (track && !oneShot) {
       if (finished && this.loop === LOOP_MODES.TRACK) {
         this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
-        if (promoted) this._adoptPromotion(track)
+        if (promoted) this._adoptPromotion(track, reason)
         else await this.play(track)
         return
       }
@@ -1671,7 +1671,7 @@ class Player extends EventEmitter {
       if (requeue) this.queue.add(track)
       this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
       if (promoted && !this.destroyed && this.queue.first?.track) {
-        this._adoptPromotion(this.queue.dequeue())
+        this._adoptPromotion(this.queue.dequeue(), reason)
         adopted = true
       } else if (this.queue.size) next = this.play()
     })
@@ -1694,7 +1694,7 @@ class Player extends EventEmitter {
   // the current track as play() would make it, but is not sent: a second send
   // restarts it at 0:00 and drops the rest of the blend. Its TrackStart, which
   // the node sends right after this end, confirms it (_settlePromotion).
-  _adoptPromotion(track) {
+  _adoptPromotion(track, reason) {
     this._replayed = this._audioSwitch = null
     this.current = track
     track.oneShot = false
@@ -1702,7 +1702,12 @@ class Player extends EventEmitter {
     this.position = 0
     this._deferredStart = false
     this._deferredStartTime = 0
-    const promotion = { track, cancelled: false, timer: null }
+    const promotion = {
+      track,
+      crossfade: reason === 'crossfading',
+      cancelled: false,
+      timer: null
+    }
     promotion.timer = this._createTimer(() => {
       if (this._promotion !== promotion) return
       this._promotion = null
@@ -1715,19 +1720,51 @@ class Player extends EventEmitter {
     this._promotion = promotion
   }
 
-  // The first TrackStart after a promotion. True when it is the promoted
-  // track's and goes on as a normal start. False when the host has played
-  // something else since (the start is not that play's), or when the node
-  // promoted a track other than ours, which is then replaced.
+  // The first TrackStart after a promotion. True when it goes on as a
+  // normal start: the promoted track's, or, once the host has played
+  // something else, that play's. False for the promoted track's start after
+  // such a play, and when the node promoted a track other than ours, which
+  // is then replaced.
   _settlePromotion(started) {
     const promotion = this._promotion
     this._promotion = null
     clearTimeout(promotion.timer)
     this._pendingTimers?.delete(promotion.timer)
-    if (promotion.cancelled) return false
-    if (Track.same(promotion.track, started)) return true
+    const promotedStarted = Track.same(promotion.track, started)
+    if (promotion.cancelled) return !promotedStarted
+    if (promotedStarted) {
+      if (promotion.crossfade) this._readPromotedPosition(promotion.track)
+      return true
+    }
     this._promotionFallback(promotion, 'the node started another track')
     return false
+  }
+
+  // A crossfade promotes a track that is already a blend's length in, and
+  // its start does not say how far, so the node is asked. Any position
+  // written while the reply is out (playerUpdate, seek, play) is newer.
+  async _readPromotedPosition(track) {
+    const asked = this.positionAt
+    let res
+    try {
+      res = await this.nodes.rest.getPlayer(this.guildId)
+    } catch (error) {
+      this.nodes?._emitDebug?.(
+        `Player ${this.guildId}: no position after a crossfade, ` +
+          `the next playerUpdate brings it: ${error?.message || error}`
+      )
+      return
+    }
+    const position = res?.state?.position
+    if (
+      this.destroyed ||
+      this.current !== track ||
+      this.positionAt !== asked ||
+      !Track.same(track, res?.track) ||
+      !_functions.isNum(position)
+    )
+      return
+    this.position = position
   }
 
   // Sends the expected track, replacing whatever the node started. Counted
