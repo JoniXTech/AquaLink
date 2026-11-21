@@ -10,6 +10,12 @@ declare module 'aqualink' {
     nodes: NodeOptions[]
     nodeMap: Map<string, Node>
     players: Map<string, Player>
+    /**
+     * Gapless or crossfade ends where the node's promoted track was not the
+     * one the queue expected, or no TrackStart followed, so aqualink played
+     * the expected track instead. Each is also logged once on `debug`.
+     */
+    promotionFallbacks: number
     clientId: string | null
     initiated: boolean
     destroyed: boolean

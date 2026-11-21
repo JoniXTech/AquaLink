@@ -1,6 +1,7 @@
 # Crossfade and gapless: aqualink plays the promoted track again
 
-Status: cause measured, fix not yet written (see [Proposed fix](#proposed-fix)).
+Status: fixed in `Player` (see [The fix](#the-fix)); hosts must preload the
+looping track in track loop (see [What a host must do](#what-a-host-must-do)).
 
 ## Symptom
 
@@ -79,21 +80,49 @@ The three PATCHes around one promotion:
   uncertain it falls back to an equal-power blend of `min(8000, duration)` ms,
   which is the 8000 ms seen for a 10 s setting.
 
-## Proposed fix
+## The fix
 
-In `Player.trackEnd`, for `reason` `'gapless'` or `'crossfading'`:
+`Player.trackEnd` takes `'gapless'` and `'crossfading'` as a finished track
+whose successor is already playing:
 
-- record the ended track (history, queue-loop re-add) and emit `trackEnd` as
-  now, but do not `play()`; mark a promotion as pending instead;
-- on the `TrackStartEvent` that follows, if `payload.track` is the head of the
-  queue (`Track.same`), dequeue it as `current` and emit `trackStart` once;
-- if the node promoted something else (the queue changed during the fade),
-  `play()` the head as today, which replaces it;
-- if no start arrives within a short timeout, `play()` the head as today.
+- the ended track enters history, goes round again in queue loop, and gets
+  its `trackEnd`, as for `'finished'`;
+- the expected track (the queue head, or the ended track itself in track
+  loop) becomes `current` the way `play()` would set it, but nothing is sent
+  (`_adoptPromotion`);
+- the `TrackStart` that follows confirms it and is emitted once
+  (`_settlePromotion`);
+- if that start is another track's, or none comes within 2 s, aqualink plays
+  the expected track after all, which is the old behaviour. Each such
+  fallback is logged once on `debug` and counted in `aqua.promotionFallbacks`;
+- a `play()` while the start is still on its way (a host `/play`, or
+  `playPrevious`) cancels the adoption, and the promoted track's start is
+  dropped. `stop()` and `skip()` act on the promoted track, which is then
+  `current`.
 
-Cases to cover in tests: track loop (the host preloads the queue head, not the
-looping track, so the promoted track is not the one aqualink wants: replay as
-today), queue loop, an empty queue at the boundary (autoplay), a `stop()` or
-`skip()` during the pending window, Lavalink nodes (they never send these
-reasons), and the restore path, whose `promoted` outcome already adopts the
-node's track this way (`AquaRecovery`).
+A head that is not resolved yet cannot be what the host preloaded, so it is
+played as before. Lavalink never sends these reasons.
+
+Tests (real `Player` and `Queue`, a scripted node that promotes its
+`nextTrack`), each for gapless and crossfade: no loop, track loop (looping
+track preloaded, and queue head preloaded), queue loop, last track promoted,
+`stop`, `skip` and `play` between end and start, previous right after,
+another track promoted, no start. All give one `trackStart` per play and one
+history entry per play; 22 of the 23 fail before the change.
+
+The local repro above, with the fix and without any patching:
+
+| run | what the voice sender sent at the boundary | `trackStart` B |
+|---|---|---|
+| crossfade | the whole blend (A fades to 0 over ~4 s), B carries on; no send gap | 1 |
+| gapless | seamless; no send gap | 1 |
+
+## What a host must do
+
+- Preload what aqualink will play next: in track loop that is the current
+  track, not the head of the queue. With the head preloaded, track loop still
+  works but each loop blends into the head and then replays the looping
+  track from 0:00 (one fallback per loop).
+- Nothing else changes: the preload follows the queue as before, and a
+  stale preload (the queue changed during the fade) is replaced by aqualink
+  and shows up in `aqua.promotionFallbacks`.

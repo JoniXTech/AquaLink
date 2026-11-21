@@ -153,6 +153,9 @@ class Aqua extends EventEmitter {
     this.nodes = nodes
     this.nodeMap = new Map()
     this.players = new Map()
+    // Gapless or crossfade ends whose promoted track was not ours (see
+    // Player._adoptPromotion), across all players.
+    this.promotionFallbacks = 0
     this.clientId = null
     this.initiated = false
     this.destroyed = false
