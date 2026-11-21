@@ -55,6 +55,13 @@ const CURRENT_TRACK_EVENTS = new Set([
   'TrackStuckEvent'
 ])
 
+// End reasons for which NodeLink has already started the next track itself,
+// from the nextTrack the host preloaded (see _adoptPromotion).
+const PROMOTION_REASONS = new Set(['gapless', 'crossfading'])
+// NodeLink sends the promoted track's TrackStart right after the end; a
+// start that has not come by then is not coming.
+const PROMOTION_START_MS = 2000
+
 const WATCHDOG_INTERVAL = 15000
 const VOICE_TRACE_INTERVAL = 15000
 const PLAYER_UPDATE_SILENCE_THRESHOLD = 45000
@@ -319,6 +326,8 @@ class Player extends EventEmitter {
     // The track playPrevious put back in the queue: the play that replaces
     // it leaves it out of _replacing, since it plays again.
     this._replayed = null
+    // A gapless or crossfade switch on the node, until its TrackStart.
+    this._promotion = null
     // Above 0 while a restore writes its saved state: no change events.
     this._quiet = 0
 
@@ -673,6 +682,10 @@ class Player extends EventEmitter {
     }
 
     if (!item) return this
+
+    // This play replaces the track the node promoted, whose TrackStart may
+    // still be on its way: that start is not this play's.
+    if (this._promotion) this._promotion.cancelled = true
 
     const replaced = this.current
     const replays = !!replaced && replaced === this._replayed
@@ -1535,6 +1548,8 @@ class Player extends EventEmitter {
 
   trackStart(_player, _track, payload = {}) {
     if (this.destroyed) return
+    // The first start after a promotion is the promoted track's.
+    if (this._promotion && !this._settlePromotion(payload.track)) return
     // Something plays again: a claim on a failed track has nothing left to
     // hold back.
     this._dropFailedTrackClaim()
@@ -1628,28 +1643,39 @@ class Player extends EventEmitter {
       return
     }
 
+    // A gapless or crossfade end is a finished track whose successor the node
+    // has already started.
+    const promoted = PROMOTION_REASONS.has(reason)
+    const finished = reason === 'finished' || promoted
     let requeue = false
     if (track && !oneShot) {
-      if (reason === 'finished' && this.loop === LOOP_MODES.TRACK) {
+      if (finished && this.loop === LOOP_MODES.TRACK) {
         this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
-        await this.play(track)
+        if (promoted) this._adoptPromotion(track)
+        else await this.play(track)
         return
       }
       // A skipped track goes round again in queue loop like a finished one;
       // in track loop a skip still moves on.
       requeue =
-        (reason === 'finished' || (reason === 'stopped' && !stuck)) &&
+        (finished || (reason === 'stopped' && !stuck)) &&
         this.loop === LOOP_MODES.QUEUE
     }
 
     // The re-add and the next track's dequeue are one queue change; play()
-    // dequeues before its first await.
+    // dequeues before its first await. Only a resolved head can be what the
+    // host preloaded; any other promotion is replaced by play() as before.
     let next = null
+    let adopted = false
     this.queue._batch(() => {
       if (requeue) this.queue.add(track)
       this.aqua.emit(AqualinkEvents.TrackEnd, this, track, reason)
-      if (this.queue.size) next = this.play()
+      if (promoted && !this.destroyed && this.queue.first?.track) {
+        this._adoptPromotion(this.queue.dequeue())
+        adopted = true
+      } else if (this.queue.size) next = this.play()
     })
+    if (adopted) return
     if (next) {
       await next
     } else if (this.isAutoplayEnabled && !oneShot) {
@@ -1662,6 +1688,62 @@ class Player extends EventEmitter {
       }
       this.aqua.emit(AqualinkEvents.QueueEnd, this, track)
     }
+  }
+
+  // NodeLink has started the track the host preloaded, mid-blend. It becomes
+  // the current track as play() would make it, but is not sent: a second send
+  // restarts it at 0:00 and drops the rest of the blend. Its TrackStart, which
+  // the node sends right after this end, confirms it (_settlePromotion).
+  _adoptPromotion(track) {
+    this._replayed = this._audioSwitch = null
+    this.current = track
+    track.oneShot = false
+    this.playing = true
+    this.position = 0
+    this._deferredStart = false
+    this._deferredStartTime = 0
+    const promotion = { track, cancelled: false, timer: null }
+    promotion.timer = this._createTimer(() => {
+      if (this._promotion !== promotion) return
+      this._promotion = null
+      if (!promotion.cancelled)
+        this._promotionFallback(
+          promotion,
+          `no TrackStart within ${PROMOTION_START_MS} ms`
+        )
+    }, PROMOTION_START_MS)
+    this._promotion = promotion
+  }
+
+  // The first TrackStart after a promotion. True when it is the promoted
+  // track's and goes on as a normal start. False when the host has played
+  // something else since (the start is not that play's), or when the node
+  // promoted a track other than ours, which is then replaced.
+  _settlePromotion(started) {
+    const promotion = this._promotion
+    this._promotion = null
+    clearTimeout(promotion.timer)
+    this._pendingTimers?.delete(promotion.timer)
+    if (promotion.cancelled) return false
+    if (Track.same(promotion.track, started)) return true
+    this._promotionFallback(promotion, 'the node started another track')
+    return false
+  }
+
+  // Sends the expected track, replacing whatever the node started. Counted
+  // on the Aqua instance, so a host can tell when its preload and its queue
+  // disagree.
+  _promotionFallback(promotion, why) {
+    const aqua = this.aqua
+    aqua.promotionFallbacks = (aqua.promotionFallbacks || 0) + 1
+    this.nodes?._emitDebug?.(
+      `Player ${this.guildId}: ${why} after a gapless or crossfade end; ` +
+        `playing ${promotion.track.identifier || 'the next track'} instead ` +
+        `(${aqua.promotionFallbacks} so far)`
+    )
+    this.play(promotion.track).catch((error) =>
+      _functions.emitAquaError(aqua, error)
+    )
   }
 
   // A 'replaced' end names the track a play() took off the node, while
@@ -1963,7 +2045,7 @@ class Player extends EventEmitter {
     this._dataStore?.clear()
     this.previousIdentifiers?.clear()
     if (this.current?.dispose && !preserveTracks) this.current.dispose()
-    this.current = this._audioSwitch = this._replayed = null
+    this.current = this._audioSwitch = this._replayed = this._promotion = null
     this._replacing.length = 0
     this.position = this.timestamp = 0
     this.queue?.clear({ dispose: !preserveTracks })

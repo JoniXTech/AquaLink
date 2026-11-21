@@ -5,7 +5,8 @@
   "main": "./build/index.js",
   "types": "./build/index.d.ts",
   "scripts": {
-    "start": "node ./build/index.js"
+    "start": "node ./build/index.js",
+    "test": "node --test test/*.test.js"
   },
   "exports": {
     ".": {
